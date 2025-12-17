@@ -1,0 +1,189 @@
+# 此文件用于配置网关, 项目从consul中读取服务配置, 与该配置文件进行合并
+# 优先级目录合并：在优先级目录中添加或修改配置文件，观察是否生效
+# 配置热更新：修改Consul中的配置或本地优先级目录的配置，确认应用能动态加载新配置
+name: gateway
+version: v1.4.0
+# 环境变量
+envs:
+  # 服务发现
+  DISCOVERY_DSN: consul://apikv.com:8500
+  # 服务发现配置路径
+  DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
+  # 输出的日志等级
+  LOG_LEVEL: debug
+  # 组织
+  OWNER: auth
+  # Casdoor 地址
+  CASDOOR_URL: https://apikv.com:8081
+
+  # 是否使用 TLS, 为 true 则使用, 需要配置CRT_FILE_PATH和KEY_FILE_PATH参数, 指定相对于入口文件(main.go)执行的路径
+  USE_TLS: "false"
+  USE_HTTP3: "false"
+  # TCP for HTTP/1.1 & HTTP/2
+  HTTP_PORT: ":8080"
+  # UDP for HTTP/3
+  HTTP3_PORT: ":443"
+  # TLS 证书路径
+  CRT_FILE_PATH: dynamic-config/tls/gateway.crt
+  # TLS Key路径
+  KEY_FILE_PATH: dynamic-config/tls/gateway.key
+
+  # JWT 公钥证书
+  JWT_PUBKEY_PATH: dynamic-config/secrets/public.pem
+
+  # RBAC模型文件路径
+  MODEL_FILE_PATH: dynamic-config/policies/model.conf
+  # RBAC策略文件路径
+  POLICIES_FILE_PATH: dynamic-config/policies/policies.csv
+
+middlewares:
+  - name: ip
+  # 前端跨域选项
+  - name: cors
+    options:
+      '@type': type.googleapis.com/gateway.middleware.cors.v1.Cors
+      allowCredentials: true
+      allowHeaders:
+        - Authorization
+        - Content-Type
+        - X-Requested-With
+        - DNT
+        - Sec-Fetch-Dest
+        - Sec-Fetch-Mode
+        - Sec-Fetch-Site
+      allowOrigins:
+        - http://localhost:3000
+      allowMethods:
+        - OPTIONS
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+  - name: logging
+  - name: tracing
+    options:
+      '@type': type.googleapis.com/gateway.middleware.tracing.v1.Tracing
+      httpEndpoint: apikv.com:16686
+      insecure: true
+  #     认证
+  - name: jwt
+    # 无需认证的接口
+    router_filter:
+      rules:
+        - path: /v1/categories/*
+          methods:
+            - GET
+            - OPTIONS
+        - path: /v1/products/*
+          methods:
+            - GET
+            - OPTIONS
+        - path: /v1/auth
+          methods:
+            - OPTIONS
+            - POST
+        - path: /v1/payments/notify
+          methods:
+            - OPTIONS
+            - POST
+        - path: /v1/payments/callback
+          methods:
+            - OPTIONS
+            - POST
+    # 基于用户的接口权限控制
+  - name: rbac
+    # 不需要鉴权的接口
+    router_filter:
+      rules:
+        - path: /v1/categories/*
+          methods:
+            - GET
+            - OPTIONS
+        - path: /v1/products/*
+          methods:
+            - GET
+            - OPTIONS
+        - path: /v1/auth
+          methods:
+            - OPTIONS
+            - POST
+        - path: /v1/payments/notify
+          methods:
+            - OPTIONS
+            - POST
+        - path: /v1/payments/callback
+          methods:
+            - OPTIONS
+            - POST
+
+endpoints:
+#  - path: /v1/products*
+#    protocol: HTTP
+#    backends:
+#      - target: 'discovery:///ecommerce-product-v1'
+#    timeout: 4s
+#    retry:
+#      attempts: 2
+#      perTryTimeout: 2s
+#      conditions:
+#        - byStatusCode: '502-504'
+#        - byHeader:
+#            name: 'Grpc-Status'
+#            value: '14'
+#
+#  - path: /v1/merchants*
+#    protocol: HTTP
+#    backends:
+#      - target: 'discovery:///ecommerce-product-v1'
+#    timeout: 4s
+#    retry:
+#      attempts: 2
+#      perTryTimeout: 2s
+#      conditions:
+#        - byStatusCode: '502-504'
+#        - byHeader:
+#            name: 'Grpc-Status'
+#            value: '14'
+#
+#  - path: /v1/categories*
+#    protocol: HTTP
+#    backends:
+#      - target: 'discovery:///ecommerce-category-v1'
+#    timeout: 4s
+#    retry:
+#      attempts: 2
+#      perTryTimeout: 2s
+#      conditions:
+#        - byStatusCode: '502-504'
+#        - byHeader:
+#            name: 'Grpc-Status'
+#            value: '14'
+#
+#  - path: /v1/auth*
+#    protocol: HTTP
+#    backends:
+#      - target: 'discovery:///ecommerce-auth-v1'
+#    timeout: 4s
+#    retry:
+#      attempts: 2
+#      perTryTimeout: 2s
+#      conditions:
+#        - byStatusCode: '502-504'
+#        - byHeader:
+#            name: 'Grpc-Status'
+#            value: '14'
+
+  - path: /user*
+    protocol: HTTP
+    backends:
+      - target: 'discovery:///user-identity-v1'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
