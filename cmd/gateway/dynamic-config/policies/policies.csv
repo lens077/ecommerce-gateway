@@ -2,7 +2,7 @@ p, public, /v1/auth, POST, allow
 p, public, /v1/products, GET, allow
 
 p, user, /search/v1.SearchService/Search, POST, allow
-p, user, /v1.SearchService/Search, POST, allow
+p, user, /user/v1.UserService/UserProfile, POST, allow
 p, user, /v1.UserService/UserProfile, POST, allow
 p, user, /v1/users/*, (GET|POST|PATCH|DELETE), allow
 p, user, /v1/carts, (GET|POST|PATCH|DELETE), allow
