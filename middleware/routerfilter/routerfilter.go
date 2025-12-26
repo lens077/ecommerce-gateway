@@ -74,6 +74,11 @@ type PathMatcher struct {
 	wildcardLevel int // 0=exact, 1=single, 2=multi
 }
 
+// RawPattern returns the raw pattern string
+func (m *PathMatcher) RawPattern() string {
+	return m.rawPattern
+}
+
 func NewPathMatcher(pattern string, methods []string) (*PathMatcher, error) {
 	// 预处理模式
 	pattern = strings.TrimSpace(pattern)

@@ -222,6 +222,8 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				return nil, fmt.Errorf("创建路径匹配器失败: %w", err)
 			}
 			matchers = append(matchers, matcher)
+			// 记录创建的匹配器规则
+			log.Infof("[JWT] 创建匹配器规则: %s, 方法: %v", rule.Path, rule.Methods)
 		}
 	}
 
@@ -231,8 +233,11 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 			log.Infof("[JWT] 处理请求: %s %s", req.Method, req.URL.Path)
 
 			// 检查是否匹配跳过规则
-			for _, matcher := range matchers {
-				if ok, _ := matcher.Match(req); ok {
+			log.Infof("[JWT] 开始匹配跳过规则，共有 %d 个规则", len(matchers))
+			for i, matcher := range matchers {
+				ok, _ := matcher.Match(req)
+				log.Infof("[JWT] 规则 %d 匹配结果: %t, 原始模式: %s, 请求路径: %s, 请求方法: %s", i, ok, matcher.RawPattern(), req.URL.Path, req.Method)
+				if ok {
 					log.Infof("[JWT] 请求匹配跳过规则，不需要JWT验证: %s %s", req.Method, req.URL.Path)
 					return next.RoundTrip(req)
 				}

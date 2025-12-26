@@ -51,6 +51,10 @@ middlewares:
         - Sec-Fetch-Dest
         - Sec-Fetch-Mode
         - Sec-Fetch-Site
+        - Connect-Protocol-Version
+        - Connect-Accept-Encoding
+        - Connect-Timeout-Ms
+        - Connect-Codec-Compress-Bin
       allowOrigins:
         - http://localhost:3000
       allowMethods:
@@ -71,51 +75,41 @@ middlewares:
     # 无需认证的接口
     router_filter:
       rules:
-        - path: /v1/categories/*
+        - path: /search/search.v1.SearchService/Search
           methods:
             - GET
+            - POST
             - OPTIONS
-        - path: /v1/products/*
+        - path: /search.v1.SearchService/Search
           methods:
             - GET
-            - OPTIONS
-        - path: /v1/auth
-          methods:
-            - OPTIONS
             - POST
-        - path: /v1/payments/notify
-          methods:
             - OPTIONS
-            - POST
-        - path: /v1/payments/callback
+        - path: /v1.UserService/SignIn
           methods:
-            - OPTIONS
+            - GET
             - POST
+            - OPTIONS
     # 基于用户的接口权限控制
   - name: rbac
     # 不需要鉴权的接口
     router_filter:
       rules:
-        - path: /v1/categories/*
+        - path: /search/search.v1.SearchService/Search
           methods:
             - GET
+            - POST
             - OPTIONS
-        - path: /v1/products/*
+        - path: /search.v1.SearchService/Search
           methods:
             - GET
-            - OPTIONS
-        - path: /v1/auth
-          methods:
-            - OPTIONS
             - POST
-        - path: /v1/payments/notify
-          methods:
             - OPTIONS
-            - POST
-        - path: /v1/payments/callback
+        - path: /v1.UserService/SignIn
           methods:
-            - OPTIONS
+            - GET
             - POST
+            - OPTIONS
 
 endpoints:
   #  - path: /v1/products*
@@ -176,13 +170,32 @@ endpoints:
 
   - path: /user*
     protocol: GRPC
-    middlewares:
-      - name: rewrite
-        options:
-          '@type': type.googleapis.com/gateway.middleware.rewrite.v1.Rewrite
-          stripPrefix: /user
+    #    middlewares:
+    #      - name: rewrite
+    #        options:
+    #          '@type': type.googleapis.com/gateway.middleware.rewrite.v1.Rewrite
+    #          stripPrefix: /user
     backends:
       - target: 'direct://localhost:4000'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /search*
+    protocol: GRPC
+    #    middlewares:
+    #      - name: rewrite
+    #        options:
+    #          '@type': type.googleapis.com/gateway.middleware.rewrite.v1.Rewrite
+    #          stripPrefix: /user
+    backends:
+      - target: 'direct://localhost:30001'
     timeout: 4s
     retry:
       attempts: 2

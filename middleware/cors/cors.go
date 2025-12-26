@@ -22,9 +22,14 @@ import (
 var (
 	defaultAllowCredentials    = true
 	defaultAllowPrivateNetwork = true
-	defaultCorsMethods         = []string{"GET", "POST", "PUT", "DELETE"}
-	defaultCorsHeaders         = []string{"Origin", "Content-Length", "Content-Type"}
+	defaultCorsMethods         = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
+	defaultCorsHeaders         = []string{
+		"Origin", "Content-Length", "Content-Type",
+		"Authorization", "Connect-Protocol-Version", "Connect-Accept-Encoding",
+		"Connect-Timeout-Ms", "Connect-Codec-Compress-Bin",
+	}
 	// (WebKit/Safari v9 sends the Origin header by default in AJAX requests)
+	// Added connect-web specific headers
 )
 
 const (

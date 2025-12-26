@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -50,8 +51,62 @@ func NewFactory(r registry.Discovery, opts ...Option) Factory {
 			return nil, err
 		}
 		client := newClient(applier, picker)
+
+		// 如果是gRPC请求且路径以*结尾，创建grpcClient包装器
+		// 例如：path: /search*，请求路径 /search/v1.SearchService/Search -> /v1.SearchService/Search
+		// 这样JWT中间件就能看到完整的原始路径，正确匹配跳过规则
+		// 而实际发送到后端的请求则是去除前缀后的路径
+		if endpoint.Protocol == config.Protocol_GRPC && strings.HasSuffix(endpoint.Path, "*") {
+			stripPrefix := strings.TrimSuffix(endpoint.Path, "*")
+			return &grpcClient{
+				client:      client,
+				stripPrefix: stripPrefix,
+				protocol:    endpoint.Protocol,
+			}, nil
+		}
+
 		return client, nil
 	}
+}
+
+// grpcClient 是对client的包装，用于处理gRPC请求的路径
+// 当请求是gRPC且路径以*结尾时，自动去除前缀
+// 例如：path: /search*，请求路径 /search/v1.SearchService/Search -> /v1.SearchService/Search
+// 这样JWT中间件就能看到完整的原始路径，正确匹配跳过规则
+// 而实际发送到后端的请求则是去除前缀后的路径
+
+type grpcClient struct {
+	client      *client
+	stripPrefix string
+	protocol    config.Protocol
+}
+
+// RoundTrip 实现 http.RoundTripper 接口
+func (c *grpcClient) RoundTrip(req *http.Request) (*http.Response, error) {
+	// 如果是gRPC请求且需要去除前缀
+	if c.protocol == config.Protocol_GRPC && c.stripPrefix != "" {
+		// 克隆请求，避免修改原始请求（原始请求用于中间件匹配）
+		reqClone := req.Clone(req.Context())
+		// 去除前缀
+		if strings.HasPrefix(reqClone.URL.Path, c.stripPrefix) {
+			newPath := strings.TrimPrefix(reqClone.URL.Path, c.stripPrefix)
+			if newPath == "" {
+				newPath = "/"
+			} else if newPath[0] != '/' {
+				newPath = "/" + newPath
+			}
+			reqClone.URL.Path = newPath
+			// 使用克隆的请求发送到后端
+			return c.client.RoundTrip(reqClone)
+		}
+	}
+	// 其他情况直接使用原始请求
+	return c.client.RoundTrip(req)
+}
+
+// Close 实现 io.Closer 接口
+func (c *grpcClient) Close() error {
+	return c.client.Close()
 }
 
 type nodeApplier struct {

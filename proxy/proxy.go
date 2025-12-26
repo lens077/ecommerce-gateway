@@ -287,6 +287,14 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 			retryBreaker.MarkFailed()
 		}
 	}
+
+	// 处理 gRPC 路径，自动去掉匹配的前缀
+	// 例如：path: /user*，请求路径 /user/v1.UserService/UserProfile -> /v1.UserService/UserProfile
+	stripPrefix := ""
+	if e.Protocol == config.Protocol_GRPC && strings.HasSuffix(e.Path, "*") {
+		stripPrefix = strings.TrimSuffix(e.Path, "*")
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// 在请求处理开始时保存原始路径
 		ctx := context.WithValue(req.Context(), middleware.RequestPathKey, req.URL.Path)
@@ -338,7 +346,17 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 			defer cancel()
 			reader := bytes.NewReader(body)
 			req.Body = io.NopCloser(reader)
-			resp, err = tripper.RoundTrip(req.Clone(tryCtx))
+
+			// 克隆请求并处理 gRPC 路径
+			// 注意：路径前缀去除要在中间件链执行之后，以便JWT等中间件能看到完整路径
+			reqClone := req.Clone(tryCtx)
+
+			resp, err = tripper.RoundTrip(reqClone)
+			// 如果是 gRPC 请求且需要去除前缀，在中间件处理后手动修改响应
+			if err == nil && stripPrefix != "" && strings.HasPrefix(reqClone.URL.Path, stripPrefix) {
+				// 这个修改不会影响中间件的处理结果，只是为了记录日志
+				// 实际的路径修改应该在客户端RoundTripper中处理
+			}
 			if err != nil {
 				if errors.Is(err, jwt.NotAuthN) || errors.Is(err, rbac.NotAuthZ) {
 					break
