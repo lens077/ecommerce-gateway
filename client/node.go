@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -19,11 +20,12 @@ import (
 )
 
 var (
-	_               selector.Node = &node{}
-	_globalClient                 = defaultClient()
-	_globalH2Client               = defaultH2Client()
-	_dialTimeout                  = 200 * time.Millisecond
-	followRedirect                = false
+	_                selector.Node = &node{}
+	_globalClient                  = defaultClient()
+	_globalH2Client                = defaultH2Client()
+	_globalH2CClient               = defaultH2CClient()
+	_dialTimeout                   = 200 * time.Millisecond
+	followRedirect                 = false
 )
 
 func init() {
@@ -81,34 +83,68 @@ func defaultClient() *http.Client {
 }
 
 func defaultH2Client() *http.Client {
+	// 1. 创建标准的 HTTP/2 Transport
+	t2 := &http2.Transport{
+		AllowHTTP:          true, // 关键：允许处理 http:// 协议
+		DisableCompression: true,
+		// 使用自定义 Dialer 覆盖 DialTLSContext
+		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   _dialTimeout,
+				KeepAlive: 30 * time.Second,
+			}
+
+			// 如果 cfg 为 nil，说明是 http:// 请求 (h2c)
+			fmt.Printf("cfg:%+v", cfg)
+			if cfg == nil {
+				return dialer.DialContext(ctx, network, addr)
+			}
+
+			// 如果 cfg 不为 nil，说明是 https:// 请求，需要手动建立 TLS 连接
+			rawConn, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+
+			// 包装成 TLS 连接
+			conf := cfg.Clone()
+			if len(conf.NextProtos) == 0 {
+				conf.NextProtos = []string{"h2", "http/1.1"}
+			}
+
+			tlsConn := tls.Client(rawConn, conf)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				rawConn.Close()
+				return nil, err
+			}
+			return tlsConn, nil
+		},
+	}
+
 	return &http.Client{
 		CheckRedirect: defaultCheckRedirect,
-		Transport: &http2.Transport{
-			// So http2.Transport doesn't complain the URL scheme isn't 'https'
-			AllowHTTP:          true,
-			DisableCompression: true,
-			// 正确处理TLS连接
-			// 使用传入的tls.Config或创建默认配置
-			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-				dialer := &net.Dialer{Timeout: _dialTimeout}
-				conn, err := dialer.DialContext(ctx, network, addr)
-				if err != nil {
-					return nil, err
-				}
+		Transport:     t2,
+	}
+}
 
-				// 如果没有提供TLS配置，创建一个默认的
-				tlsConfig := cfg
-				if tlsConfig == nil {
-					tlsConfig = &tls.Config{
-						InsecureSkipVerify: true,
-						MinVersion:         tls.VersionTLS12,
-					}
-				}
-
-				// 返回TLS连接
-				return tls.Client(conn, tlsConfig), nil
-			},
+// 专门用于处理 H2C (明文 HTTP/2)
+func defaultH2CClient() *http.Client {
+	t2 := &http2.Transport{
+		AllowHTTP:          true,
+		DisableCompression: true,
+		// 对于 H2C，忽略cfg，使用普通 TCP 拨号
+		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   _dialTimeout,
+				KeepAlive: 30 * time.Second,
+			}
+			return dialer.DialContext(ctx, network, addr)
 		},
+	}
+
+	return &http.Client{
+		CheckRedirect: defaultCheckRedirect,
+		Transport:     t2,
 	}
 }
 
@@ -121,8 +157,16 @@ func newNode(addr string, protocol config.Protocol, weight *int64, md map[string
 		version:  version,
 		name:     name,
 	}
+
 	if protocol == config.Protocol_GRPC {
-		node.client = _globalH2Client
+		// 区分 HTTPS 和 HTTP (H2C)
+		// 如果地址明确是 https 开头，使用 TLS 客户端
+		// 例如localhost:4000 这种不带 scheme 的情况都默认为 H2C
+		if strings.HasPrefix(addr, "https://") {
+			node.client = _globalH2Client
+		} else {
+			node.client = _globalH2CClient
+		}
 	} else {
 		node.client = _globalClient
 	}

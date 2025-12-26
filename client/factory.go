@@ -72,7 +72,12 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 		switch target.Scheme {
 		case "direct":
 			weighted := backend.Weight // weight is only valid for direct scheme
-			node := newNode(backend.Target, na.endpoint.Protocol, weighted, map[string]string{}, "", "")
+			// 对于 direct 方案，使用解析后的 Authority 作为地址，而不是完整的 Target
+			nodeAddr := target.Authority
+			if nodeAddr == "" {
+				nodeAddr = target.Endpoint
+			}
+			node := newNode(nodeAddr, na.endpoint.Protocol, weighted, map[string]string{}, "", "")
 			nodes = append(nodes, node)
 			na.picker.Apply(nodes)
 		case "discovery":
