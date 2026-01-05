@@ -71,7 +71,6 @@ func GetConsulLoader() (*ConsulFileLoader, error) {
 }
 
 // SyncFile 带验证的文件同步方法
-
 func (l *ConsulFileLoader) SyncFile(remotePath, localPath string, validateFunc func(string) error) error {
 	tempFile, err := os.CreateTemp(filepath.Dir(localPath), "tmp-*")
 	if err != nil {
@@ -80,7 +79,9 @@ func (l *ConsulFileLoader) SyncFile(remotePath, localPath string, validateFunc f
 	defer func() {
 		tempFile.Close()
 		if err := os.Remove(tempFile.Name()); err != nil {
-			l.logger.Warnf("清理临时文件失败: %v", err)
+			if !errors.Is(err, os.ErrNotExist) {
+				l.logger.Warnf("清理临时文件失败: %v", err)
+			}
 		}
 	}()
 

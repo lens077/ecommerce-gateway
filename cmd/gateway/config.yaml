@@ -176,7 +176,7 @@ endpoints:
     #          '@type': type.googleapis.com/gateway.middleware.rewrite.v1.Rewrite
     #          stripPrefix: /user
     backends:
-      - target: 'direct://localhost:4000'
+      - target: 'direct://localhost:30001'
     timeout: 4s
     retry:
       attempts: 2
@@ -195,7 +195,7 @@ endpoints:
     #          '@type': type.googleapis.com/gateway.middleware.rewrite.v1.Rewrite
     #          stripPrefix: /user
     backends:
-      - target: 'direct://localhost:30001'
+      - target: 'direct://localhost:30002'
     timeout: 4s
     retry:
       attempts: 2

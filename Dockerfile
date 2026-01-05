@@ -1,7 +1,7 @@
 # 定义基础镜像的 Golang 版本
-ARG GOIMAGE=golang:1.24.0-alpine3.21
+ARG GO_IMAGE=golang:1.25.1-alpine3.22
 
-FROM --platform=$BUILDPLATFORM ${GOIMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 WORKDIR /src
 COPY . .
 
@@ -96,7 +96,7 @@ CMD ["/app/gateway", "-conf", "/app/dynamic-config/config.yaml"]
 #   --progress=plain \
 #   -t ecommerce/gateway:dev \
 #   --build-arg CGOENABLED=0 \
-#   --build-arg GOIMAGE=golang:1.24.0 \
+#   --build-arg GO_IMAGE=golang:1.24.0 \
 #   --build-arg GOOS=linux \
 #   --build-arg GOARCH=arm64 \
 #   --build-arg VERSION=dev \
@@ -113,16 +113,15 @@ CMD ["/app/gateway", "-conf", "/app/dynamic-config/config.yaml"]
 #   --progress=plain \
 #   -t $REPOSITORY:$VERSION \
 #   --build-arg CGOENABLED=0 \
-#   --build-arg GOIMAGE=golang:1.24.0-alpine3.21 \
+#   --build-arg GO_IMAGE=golang:1.24.0-alpine3.21 \
 #   --build-arg VERSION=$VERSION \
 #   --build-arg GATEWAY_PORT=$GATEWAY_PORT \
 #   --platform $PLATFORM_1,$PLATFORM_2 \
 #   --push
 
 # 推送
-# register="ccr.ccs.tencentyun.com"
-# docker tag $REPOSITORY:$VERSION $register/$REPOSITORY:$VERSION
-# docker push $register/$REPOSITORY:$VERSION
+# docker tag ecommerce/gateway:dev ccr.ccs.tencentyun.com/sumery/ecommerce-gateway:dev
+# docker push ccr.ccs.tencentyun.com/sumery/ecommerce-gateway:dev
 
 # 拉取
 # docker pull $register/$REPOSITORY:$VERSION

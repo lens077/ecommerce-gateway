@@ -19,8 +19,6 @@ vendor/
 *.o
 *.a
 *.so
-cmd/gateway/gateway
-examples/helloworld/helloworld
 
 # OS General
 Thumbs.db
@@ -38,4 +36,7 @@ bin/
 *.swp
 
 # Temporary files in secrets directory
-cmd/gateway/dynamic-config/secrets/tmp-*
+cmd/gateway/configs
+
+# Configs file
+configs/

@@ -8,8 +8,9 @@ api:
  	  --go_out=paths=source_relative:./api \
 	  $(API_PROTO_FILES)
 
-REPOSITORY ?= ccr.ccs.tencentyun.com/kratos/gateway
+REPOSITORY ?= harbor.apikv.com:5443/ecommerce/gateway
 GOIMAGE ?= golang:1.24.0-alpine3.21
+VERSION ?= latest
 GATEWAY_PORT ?= 8080
 PLATFORM_1 ?= linux/amd64
 PLATFORM_2 ?= linux/arm64

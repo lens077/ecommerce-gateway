@@ -1,24 +1,32 @@
 services:
 
-  gateway:
-    image: ccr.ccs.tencentyun.com/kratos/gateway:v1.7.0
+  ecommerce-gateway:
+    image: ccr.ccs.tencentyun.com/sumery/ecommerce-gateway:latest
     ports:
       - "8080:8080"
+    networks:
+      - ecommerce
     container_name: ecommerce-gateway
-    platform: linux/amd64
+#    platform: linux/arm64
     pull_policy: always
     restart: on-failure:3
     environment:
-      - CASDOOR_URL=http://CASDOOR_URL:8000
-      - DISCOVERY_DSN=consul://DISCOVERY_DSN:3026
+      - OWNER=ecommerce
+      - CASDOOR_URL=https://apikv.com:8081
+      - DISCOVERY_DSN=consul://apikv.com:8500
       - DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml
-      - POLICIES_FILE_PATH=/app/dynamic-config/policies/policies.csv
-      - MODEL_FILE_PATH=/app/dynamic-config/policies/model.conf
+      - POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv
+      - MODEL_FILE_PATH=./dynamic-config/policies/model.conf
+      - USE_TLS=false
+      - USE_HTTP3=false
+      - HTTP_PORT=8080
     command:
       - "/app/gateway"
       - "-conf"
       - "/app/configs/config.yaml"
-    networks:
-      - ecommerce
+
+networks:
+  ecommerce:
+    external: true
 
 # docker compose build
