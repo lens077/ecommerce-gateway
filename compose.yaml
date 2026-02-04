@@ -1,7 +1,7 @@
 services:
 
   ecommerce-gateway:
-    image: ccr.ccs.tencentyun.com/sumery/ecommerce-gateway:latest
+    image: harbor.apikv.com:5443/ecommerce/gateway:latest
     ports:
       - "8080:8080"
     networks:
@@ -15,8 +15,8 @@ services:
       - CASDOOR_URL=https://apikv.com:8081
       - DISCOVERY_DSN=consul://apikv.com:8500
       - DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml
-      - POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv
-      - MODEL_FILE_PATH=./dynamic-config/policies/model.conf
+      - POLICIES_FILE_PATH=./configs/policies/policies.csv
+      - MODEL_FILE_PATH=./configs/policies/model.conf
       - USE_TLS=false
       - USE_HTTP3=false
       - HTTP_PORT=8080

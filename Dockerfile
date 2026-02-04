@@ -75,8 +75,8 @@ RUN apk add --no-cache ca-certificates tzdata && \
 # USER appuser
 
 # 创建应用目录结构
-RUN mkdir -pv ./dynamic-config/{tls,policies}
-RUN ls -l ./dynamic-config/
+RUN mkdir -pv ./configs/{tls,policies}
+RUN ls -l ./configs/
 
 # 设置默认工作目录
 WORKDIR /app
@@ -85,7 +85,7 @@ WORKDIR /app
 EXPOSE $GATEWAY_PORT
 
 # 设置容器启动时执行的命令
-CMD ["/app/gateway", "-conf", "/app/dynamic-config/config.yaml"]
+CMD ["/app/gateway", "-conf", "/app/configs/config.yaml"]
 
 # 构建Docker所属的当前平台与架构的二进制文件, 进到当前的backend目录
 # Docker 容器在 Linux 内核上运行，即便是在 macOS 或 Windows 环境中。

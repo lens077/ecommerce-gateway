@@ -28,6 +28,7 @@ var (
 		"Authorization", "Connect-Protocol-Version", "Connect-Accept-Encoding",
 		"Connect-Timeout-Ms", "Connect-Codec-Compress-Bin",
 	}
+	defaultAllowOrigins = []string{"*"}
 	// (WebKit/Safari v9 sends the Origin header by default in AJAX requests)
 	// Added connect-web specific headers
 )

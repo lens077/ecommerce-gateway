@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ecommerce-gateway-config
+data:
+  OWNER: "ecommerce"
+  CASDOOR_URL: "https://apikv.com:8081"
+  DISCOVERY_DSN: "consul://apikv.com:8500"
+  DISCOVERY_CONFIG_PATH: "ecommerce/gateway/config.yaml"
+  POLICIES_FILE_PATH: "./configs/policies/policies.csv"
+  MODEL_FILE_PATH: "./configs/policies/model.conf"
+  USE_TLS: "false"
+  USE_HTTP3: "false"
+  HTTP_PORT: "8080"

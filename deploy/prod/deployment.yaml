@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-gateway-deploy
+  labels:
+    app: ecommerce-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ecommerce-gateway
+  template:
+    metadata:
+      name: ecommerce-gateway
+      labels:
+        app: ecommerce-gateway
+    spec:
+      containers:
+        - name: ecommerce-gateway
+          image: harbor.apikv.com:5443/ecommerce/gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: ecommerce-gateway-config
+          command:
+            - "/app/gateway"
+          args:
+            - "-conf"
+            - "/app/configs/config.yaml"
+      restartPolicy: Always
+      

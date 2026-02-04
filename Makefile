@@ -15,6 +15,14 @@ GATEWAY_PORT ?= 8080
 PLATFORM_1 ?= linux/amd64
 PLATFORM_2 ?= linux/arm64
 
+.PHONY: k8s-dev
+k8s-dev:
+	kubectl apply -f deploy/dev
+
+.PHONY: k8s-prod
+k8s-prod:
+	kubectl apply -f deploy/prod
+
 .PHONY: build
 build:
 	docker buildx build . \

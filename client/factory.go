@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -175,14 +177,69 @@ func (na *nodeApplier) Callback(services []*registry.ServiceInstance) error {
 	for _, ser := range services {
 		addr, err := parseEndpoint(ser.Endpoints, scheme, false)
 		if err != nil || addr == "" {
-			log.Errorf("failed to parse endpoint: %v/%s: %v", ser.Endpoints, scheme, err)
-			continue
+			// 如果没有找到匹配的grpc地址，尝试从http地址中提取端口信息构建grpc地址
+			if scheme == "grpc" {
+				port := extractPortFromEndpoints(ser.Endpoints)
+				if port > 0 {
+					// 使用本地地址或从http地址中提取的IP和端口
+					addr = extractAddressFromEndpoints(ser.Endpoints, port)
+					log.Infof("Using extracted endpoint address: %s for service: %s (scheme: %s)", addr, ser.Name, scheme)
+				} else {
+					log.Errorf("failed to parse endpoint: %v/%s: %v, and no port available", ser.Endpoints, scheme, err)
+					continue
+				}
+			} else {
+				log.Errorf("failed to parse endpoint: %v/%s: %v", ser.Endpoints, scheme, err)
+				continue
+			}
 		}
 		node := newNode(addr, na.endpoint.Protocol, nodeWeight(ser), ser.Metadata, ser.Version, ser.Name)
 		nodes = append(nodes, node)
 	}
 	na.picker.Apply(nodes)
 	return nil
+}
+
+// extractPortFromEndpoints 从Endpoints中提取端口信息
+func extractPortFromEndpoints(endpoints []string) int {
+	for _, e := range endpoints {
+		u, err := url.Parse(e)
+		if err != nil {
+			continue
+		}
+		_, portStr, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			continue
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			continue
+		}
+		return port
+	}
+	return 0
+}
+
+// extractAddressFromEndpoints 从Endpoints中提取地址信息
+func extractAddressFromEndpoints(endpoints []string, port int) string {
+	for _, e := range endpoints {
+		u, err := url.Parse(e)
+		if err != nil {
+			continue
+		}
+		// 尝试从HTTP地址中提取IP
+		if u.Scheme == "http" {
+			host, _, err := net.SplitHostPort(u.Host)
+			if err != nil {
+				// 如果没有端口，使用完整的host
+				host = u.Host
+			}
+			// 构建新的地址，使用提取的IP和端口
+			return fmt.Sprintf("%s:%d", host, port)
+		}
+	}
+	// 如果没有找到HTTP地址，使用localhost
+	return fmt.Sprintf("localhost:%d", port)
 }
 
 func (na *nodeApplier) Cancel() {

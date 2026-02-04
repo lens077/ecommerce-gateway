@@ -55,7 +55,7 @@ const (
 // 默认值
 const (
 	// ConfigDir 配置目录
-	ConfigDir = "dynamic-config"
+	ConfigDir = "configs"
 
 	// SecretsDirName 密钥目录, jwt公钥
 	SecretsDirName    = "secrets"

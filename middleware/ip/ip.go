@@ -128,3 +128,40 @@ func FormatClientIP(req *http.Request) string {
 	}
 	return clientIP
 }
+
+// func ExtractRealIP() middleware.Middleware {
+// 	return func(handler middleware.Handler) middleware.Handler {
+// 		return func(ctx context.Context, req interface{}) (reply interface{}, err error) {
+// 			if tr, ok := transport.FromServerContext(ctx); ok {
+// 				headers := tr.RequestHeader()
+// 				var userIP netip.Addr
+//
+// 				// 1. 获取 X-Forwarded-For (XFF)
+// 				// 格式通常是: [用户真实IP], [代理1], [代理2]
+// 				xff := headers.Get("X-Forwarded-For")
+// 				if xff != "" {
+// 					ips := strings.Split(xff, ",")
+// 					// 取第一个，并清理空格
+// 					if addr, err := netip.ParseAddr(strings.TrimSpace(ips[0])); err == nil {
+// 						userIP = addr
+// 					}
+// 				}
+//
+// 				// 2. 如果 XFF 为空，尝试 X-Real-IP
+// 				if !userIP.IsValid() {
+// 					if xrip := headers.Get("X-Real-IP"); xrip != "" {
+// 						if addr, err := netip.ParseAddr(xrip); err == nil {
+// 							userIP = addr
+// 						}
+// 					}
+// 				}
+//
+// 				// 3. 将解析好的 netip.Addr 注入 Context 供下游使用
+// 				if userIP.IsValid() {
+// 					ctx = context.WithValue(ctx, "user_real_ip", userIP)
+// 				}
+// 			}
+// 			return handler(ctx, req)
+// 		}
+// 	}
+// }

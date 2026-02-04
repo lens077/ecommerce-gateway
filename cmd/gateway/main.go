@@ -39,7 +39,6 @@ import (
 	_ "github.com/go-kratos/gateway/middleware/routerfilter" // 路由过滤器
 	_ "github.com/go-kratos/gateway/middleware/tracing"      // 链路追踪中间件
 	_ "github.com/go-kratos/gateway/middleware/transcoder"   // 编解码中间件
-	_ "go.uber.org/automaxprocs"
 
 	"github.com/go-kratos/kratos/v2"
 	"github.com/go-kratos/kratos/v2/log"
