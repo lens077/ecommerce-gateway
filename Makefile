@@ -15,6 +15,30 @@ GATEWAY_PORT ?= 8080
 PLATFORM_1 ?= linux/amd64
 PLATFORM_2 ?= linux/arm64
 
+.PHONY: dev
+dev:
+	CASDOOR_URL=https://apikv.com:8081 \
+	DISCOVERY_DSN=consul://localhost:8500 \
+	DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
+	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
+	USE_TLS=false \
+	USE_HTTP3=false \
+	HTTP_PORT=8080 \
+	go run cmd/gateway/main.go
+
+.PHONY: run
+run:
+	CASDOOR_URL=https://apikv.com:8081 \
+	DISCOVERY_DSN=consul://apikv.com:8500 \
+	DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
+	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
+	USE_TLS=false \
+	USE_HTTP3=false \
+	HTTP_PORT=8080 \
+	go run cmd/gateway/main.go
+
 .PHONY: k8s-dev
 k8s-dev:
 	kubectl apply -f deploy/dev

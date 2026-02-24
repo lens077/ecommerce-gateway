@@ -40,3 +40,5 @@ cmd/gateway/configs
 
 # Configs file
 configs/
+
+Makefile
