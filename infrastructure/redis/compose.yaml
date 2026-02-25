@@ -1,0 +1,26 @@
+services:
+  redis:
+    image: redis
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./data:/data
+      - redis-logs:/logs
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    environment:
+      # 可用于某些镜像的日志配置（非必须）
+      REDIS_LOG_LEVEL: notice
+    networks:
+      - app-network
+
+# 卷声明
+volumes:
+  redis-logs:
+
+# 网络声明
+networks:
+  app-network:
+    driver: bridge

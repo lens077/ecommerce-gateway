@@ -39,6 +39,10 @@ run:
 	HTTP_PORT=8080 \
 	go run cmd/gateway/main.go
 
+.PHONY: consul
+consul:
+	docker compose -f infrastructure/consul/compose.yaml up -d
+
 .PHONY: k8s-dev
 k8s-dev:
 	kubectl apply -f deploy/dev

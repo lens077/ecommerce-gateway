@@ -4,74 +4,181 @@
 
 HTTP -> Proxy -> Router -> Middleware -> Client -> Selector -> Node
 
-# Run
-## 配置
-`cmd/gateway/config.yaml`:
-```yaml
+## 快速入门
+与后端通信的模式选择:
+- discovery: 服务发现模式,使用consul作为服务注册和发现的中间件, 使用它时必须保证consul可以访问到微服务
+  优点:
+  - 负载均衡
+  - 健康检查
+  缺点:
+  - 对基础设施稳定性要求高
+- direct: 直连模式, 网关直接转发流量到后端
+  优点:
+    - 性能最好, 减少一跳
+  缺点:
+    - 没有负载均衡
+    - 缺少健康检查
+
+当你选择使用服务发现模式时, url的格式是: `/<path>/<service>/<method>`, path是在网关配置文件编写的`endpoints`.`path`, 例如`/product*`,那么它的url就是: `http://localhost:8080/product/product.v1.ProductService/GetProductDetail` 
+当你使用直连模式时, url的格式是: `/<service>/<method>`
+
+配置:
+```yml
+# 此文件用于配置网关, 项目从consul中读取服务配置, 与该配置文件进行合并
+# 优先级目录合并：在优先级目录中添加或修改配置文件，观察是否生效
+# 配置热更新：修改Consul中的配置或本地优先级目录的配置，确认应用能动态加载新配置
+name: gateway
+version: v1.4.0
+# 环境变量
 envs:
   # 服务发现
-  DISCOVERY_DSN: "consul://DISCOVERY_DSN:8500"
+  DISCOVERY_DSN: consul://localhost:8500
   # 服务发现配置路径
-  DISCOVERY_CONFIG_PATH: "ecommerce/gateway/config.yaml"
+  DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
   # 输出的日志等级
-  LOG_LEVEL: "debug"
+  LOG_LEVEL: debug
+  # 组织
+  OWNER: auth
   # Casdoor 地址
-  CASDOOR_URL: http://CASDOOR_URL:8000
+  CASDOOR_URL: https://CASDOOR_URL:8081
 
   # 是否使用 TLS, 为 true 则使用, 需要配置CRT_FILE_PATH和KEY_FILE_PATH参数, 指定相对于入口文件(main.go)执行的路径
   USE_TLS: "false"
+  USE_HTTP3: "false"
+  # TCP for HTTP/1.1 & HTTP/2
+  HTTP_PORT: ":8080"
+  # UDP for HTTP/3
+  HTTP3_PORT: ":443"
   # TLS 证书路径
-  CRT_FILE_PATH: "dynamic-config/tls/gateway.crt"
+  CRT_FILE_PATH: configs/tls/gateway.crt
   # TLS Key路径
-  KEY_FILE_PATH: "dynamic-config/tls/gateway.key"
-  
+  KEY_FILE_PATH: configs/tls/gateway.key
+
   # JWT 公钥证书
-  JWT_PUBKEY_PATH: "/app/dynamic-config/policies/model.conf"
-  
+  JWT_PUBKEY_PATH: configs/secrets/public.pem
+
   # RBAC模型文件路径
-  MODEL_FILE_PATH: "/app/dynamic-config/policies/model.conf"
+  MODEL_FILE_PATH: configs/rbac/model.conf
   # RBAC策略文件路径
-  POLICIES_FILE_PATH: "/app/dynamic-config/policies/policies.csv"
-```
+  POLICIES_FILE_PATH: configs/rbac/policies.csv
 
-```bash
-CASDOOR_URL=http://CASDOOR_URL:8000 \
-DISCOVERY_DSN=consul://DISCOVERY_DSN:8500 \
-DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
-POLICIES_FILE_PATH=/app/dynamic-config/policies/policies.csv \
-MODEL_FILE_PATH=/app/dynamic-config/policies/model.conf \
-kr run
-```
+middlewares:
+  - name: ip
+  # 前端跨域选项
+  - name: cors
+    options:
+      '@type': type.googleapis.com/gateway.middleware.cors.v1.Cors
+      allowCredentials: true
+      allowHeaders:
+        - Authorization
+        - Content-Type
+        - X-Requested-With
+        - DNT
+        - Sec-Fetch-Dest
+        - Sec-Fetch-Mode
+        - Sec-Fetch-Site
+        - Connect-Protocol-Version
+        - Connect-Accept-Encoding
+        - Connect-Timeout-Ms
+        - Connect-Codec-Compress-Bin
+      allowOrigins:
+        - http://localhost:3000
+        - localhost:3000
+      allowMethods:
+        - OPTIONS
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+  - name: logging
+  - name: tracing
+    options:
+      '@type': type.googleapis.com/gateway.middleware.tracing.v1.Tracing
+      httpEndpoint: 192.168.3.108:4318
+      insecure: true
+  #     认证
+  - name: jwt
+    # 无需认证的接口
+    router_filter:
+      rules:
+        - path: /search/search.v1.SearchService/Search
+          methods:
+            - POST
+            - OPTIONS
+        - path: /user/user.v1.UserService/SignIn
+          methods:
+            - POST
+            - OPTIONS
+        - path: /product/product.v1.ProductService/GetProductDetail
+          methods:
+            - POST
+            - OPTIONS
 
-# gRPC
-gRPC本质上是基于HTTP/2的协议, 它在调用时只使用POST方法, 所以gRPC的method只有POST方法, 所以gRPC的配置和HTTP的配置是一样的, 
-但HTTP路径是你自己定义的, gRPC路径是protoc这些生成器自动根据由服务名和方法名组成的
+    # 基于用户的接口权限控制
+  - name: rbac
+    # 不需要鉴权的接口
+    router_filter:
+      rules:
+        - path: /search/search.v1.SearchService/Search
+          methods:
+            - POST
+            - OPTIONS
+        - path: /user/user.v1.UserService/SignIn
+          methods:
+            - POST
+            - OPTIONS
+        - path: /product/product.v1.ProductService/GetProductDetail
+          methods:
+            - POST
+            - OPTIONS
 
-path格式:
-- 特定路径: /包名.服务名/方法名
-- 通配符: /包名.服务名*
-
-示例:
-```protobuf
-package ecommerce.product.v1;
-service ProductService {}
-```
-path路径就是: 
-- /ecommerce.product.v1.ProductService*
-- /ecommerce.product.v1.ProductService/CreateProduct
-
-完整的gRPC配置示例:
-```yaml
 endpoints:
-  - path: /ecommerce.product.v1.ProductService*
-    timeout: 1s
-    method: POST
+  - path: /user*
+    protocol: GRPC
+    #    middlewares:
+    #      - name: rewrite
+    #        options:
+    #          '@type': type.googleapis.com/gateway.middleware.rewrite.v1.Rewrite
+    #          stripPrefix: /user
+    backends:
+      #- target: 'direct://localhost:30001' # 直连模式
+      - target: 'discovery:///user-identity-v1' # 服务发现模式
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /search*
+    protocol: GRPC
+    #          stripPrefix: /user
+    backends:
+      #- target: 'direct://localhost:30002'
+      - target: 'discovery:///search-product-v1'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /product*
     protocol: GRPC
     backends:
-      - target: 'discovery:///ecommerce-product-v1'
+      - target: 'direct://localhost:30003'
+      #- target: 'discovery:///product-core-v1'
+    timeout: 4s
     retry:
-      attempts: 3
-      perTryTimeout: 0.1s
+      attempts: 2
+      perTryTimeout: 2s
       conditions:
         - byStatusCode: '502-504'
         - byHeader:
@@ -80,69 +187,6 @@ endpoints:
 
 ```
 
-# 编写自定义中间件
-1. 创建一个目录: ./middleware/routerfilter
-2. 创建一个文件: ./middleware/routerfilter/routerfilter.go
-3. 如果需要配置: : /api/gateway/middleware/routerfilter/routerfilter.proto
-4. 实现接口
-```go
-package routerfilter
-
-import "github.com/go-kratos/gateway/middleware"
-
-func Middleware(c *config.Middleware) (middleware.Middleware, error) {
-	return func(next http.RoundTripper) http.RoundTripper {
-		return middleware.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			// 在这里编写中间件逻辑
-			// ...
-			
-			// 执行到这里时就意味着中间件已经执行完毕, 根据./cmd/gateway/config.yaml的中间件顺序继续执行下一个中间件
-			return next.RoundTrip(req)
-		}
-	}
-}
-```
-
-1. 当你需要提供给其他中间件或者全局使用时, 可以在`./api/gateway/config/v1/gateway.proto`配置通用的配置,然后在`func Middleware(c *config.Middleware) (middleware.Middleware, error) {} `使用`c.XXX` 来获取配置
-2. 当你只需要你自身的配置的时候, 在`./api/gateway/middleware/` 创建, 例如 `routerfilter/v1/routerfilter.proto` 文件, 通过生成出的pb包来使用, 例如
-```go
-import v1 "github.com/go-kratos/gateway/api/gateway/middleware/routerfilter/v1"
-
-options := &v1.RouterFilter{}`
-````
-
-5. 注册:
-```go
-package routerfilter
-func init() {
-	prometheus.MustRegister(requestsTotal, requestDuration)
-	middleware.Register("router_filter", Middleware)
-	fmt.Println("RouterFilter middleware initialized")
-}
-
-```
-
-6. 添加中间件到主进程
-```go
-package main
-import (
-  _ "github.com/go-kratos/gateway/middleware/routerfilter" // 过滤中间件
-)
-```
-
-## Protocol
-* HTTP -> HTTP  
-* HTTP -> gRPC  
-* gRPC -> gRPC  
-
-## Encoding
-* Protobuf Schemas
-
-## Endpoint
-* prefix: /api/echo/*
-* path: /api/echo/hello
-* regex: /api/echo/[a-z]+
-* restful: /api/echo/{name}
 
 ## TLS
 1. 开发测试时可以使用自签名证书, 生产需要使用真实的证书, 项目支持自签名证书的生成, 可以使用以下命令生成自签名证书:
