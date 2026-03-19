@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,15 +15,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-kratos/gateway/middleware/jwt"
-	"github.com/go-kratos/gateway/middleware/rbac"
-
 	"github.com/go-kratos/aegis/circuitbreaker/sre"
 	config "github.com/go-kratos/gateway/api/gateway/config/v1"
 	"github.com/go-kratos/gateway/client"
+	errorsConst "github.com/go-kratos/gateway/errors"
 	"github.com/go-kratos/gateway/middleware"
+	"github.com/go-kratos/gateway/middleware/jwt"
 	"github.com/go-kratos/gateway/router"
 	"github.com/go-kratos/gateway/router/mux"
+	"github.com/go-kratos/kratos/v2/errors"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/selector"
 	"github.com/go-kratos/kratos/v2/transport/http/status"
@@ -91,9 +90,10 @@ func setXFFHeader(req *http.Request) {
 }
 
 type ApiError struct {
-	Code    int    `json:"code"`
-	Message string `json:"msg"`
-	Detail  string `json:"detail,omitempty"`
+	Code     int               `json:"code"`
+	Reason   string            `json:"reason"`
+	Message  string            `json:"message"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 var errorCodeMapping = map[int]int{
@@ -107,48 +107,91 @@ var errorCodeMapping = map[int]int{
 
 func writeError(w http.ResponseWriter, r *http.Request, err error, labels middleware.MetricsLabels) {
 	var statusCode int
-	switch {
-	case errors.Is(err, context.Canceled),
-		err.Error() == "client disconnected":
-		statusCode = 499
-	case errors.Is(err, context.DeadlineExceeded):
-		statusCode = 504
-	case errors.Is(err, jwt.NotAuthN) || strings.Contains(err.Error(), "令牌已过期"):
-		log.Errorf("Failed for authN request: %s: %+v", r.URL.String(), err)
-		statusCode = http.StatusUnauthorized
-	case errors.Is(err, rbac.NotAuthZ):
-		log.Errorf("Failed for authZ request: %s: %+v", r.URL.String(), err)
-		statusCode = http.StatusForbidden
-	default:
-		log.Errorf("Failed to handle request: %s: %+v", r.URL.String(), err)
-		statusCode = 502
-	}
+	var errorMessage string
+	var errorReason string
+	var metadata map[string]string
 
-	errResp := ApiError{
-		Code:    errorCodeMapping[statusCode],
-		Message: http.StatusText(statusCode),
-		Detail:  err.Error(),
-	}
-
-	requestsTotalIncr(r, labels, statusCode)
-	if labels.Protocol() == config.Protocol_GRPC.String() {
-		code := strconv.Itoa(int(status.ToGRPCCode(statusCode)))
-		w.Header().Set("Content-Type", "application/grpc")
-		w.Header().Set("Grpc-Status", code)
-		w.Header().Set("Grpc-Message", err.Error())
-		statusCode = 200
+	// 提取 Kratos 错误信息
+	kratosErr := errors.FromError(err)
+	if kratosErr != nil {
+		statusCode = int(kratosErr.Code)
+		errorMessage = kratosErr.Message
+		errorReason = kratosErr.Reason
+		metadata = kratosErr.Metadata
 	} else {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		switch {
+		case errors.Is(err, context.Canceled), err.Error() == "client disconnected":
+			statusCode = 499
+		case errors.Is(err, context.DeadlineExceeded):
+			statusCode = 504
+		case errors.Is(err, jwt.NotAuthN) || strings.Contains(err.Error(), "令牌已过期"):
+			statusCode = http.StatusUnauthorized
+		default:
+			statusCode = http.StatusInternalServerError
+		}
+		errorMessage = err.Error()
+		errorReason = "UNKNOWN_ERROR"
+	}
+
+	// 构造 Connect 协议兼容的错误结构
+	// Connect 协议要求 code 是字符串（如 "permission_denied"）
+	// 我们将 Kratos 的 Reason 映射给 Connect 的 Code，实现业务语义化
+	connectErr := map[string]interface{}{
+		"code":    strings.ToLower(errorReason), // Connect 标准格式通常为小写下划线
+		"message": errorMessage,
+		"details": []interface{}{
+			map[string]interface{}{
+				"@type":    "type.googleapis.com/google.rpc.ErrorInfo",
+				"reason":   errorReason, // 原始 Kratos Reason
+				"metadata": metadata,    // 原始 Kratos Metadata
+			},
+		},
+	}
+
+	// 处理指标
+	requestsTotalIncr(r, labels, statusCode)
+
+	// 统一返回 JSON
+	// 无论是什么协议请求，只要是 Web 调用的网关，返回可读 JSON 才是调试友好的
+	// w.Header().Set("Content-Type", "application/connect+json; charset=utf-8")
+	w.Header().Set("Content-Type", "application/connect+json; charset=utf-8")
+
+	// 添加CORS响应头
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Length, Content-Type, Authorization, Connect-Protocol-Version, Connect-Accept-Encoding, Connect-Timeout-Ms, Connect-Codec-Compress-Bin")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Max-Age", "600")
+	}
+
+	// 如果是 gRPC/Connect 协议流，按协议规范填充 Header
+	if labels.Protocol() == config.Protocol_GRPC.String() {
+		// 注意：Connect 协议在发生错误时，HTTP 状态码应反映错误（非 200）
+		// 除非你在做流式传输（Streaming），否则不建议强制写死 200
+		w.Header().Set("Grpc-Status", strconv.Itoa(int(status.ToGRPCCode(statusCode))))
 	}
 
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(errResp)
+	json.NewEncoder(w).Encode(connectErr)
 }
 
 // notFoundHandler replies to the request with an HTTP 404 not found error.
 func notFoundHandler(w http.ResponseWriter, r *http.Request) {
 	code := http.StatusNotFound
 	message := "404 page not found"
+
+	// 添加CORS响应头
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Length, Content-Type, Authorization, Connect-Protocol-Version, Connect-Accept-Encoding, Connect-Timeout-Ms, Connect-Codec-Compress-Bin")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Max-Age", "600")
+	}
+
 	http.Error(w, message, code)
 	log.Context(r.Context()).Errorw(
 		"source", "accesslog",
@@ -165,7 +208,18 @@ func notFoundHandler(w http.ResponseWriter, r *http.Request) {
 
 func methodNotAllowedHandler(w http.ResponseWriter, r *http.Request) {
 	code := http.StatusMethodNotAllowed
-	message := http.StatusText(code)
+	message := "405 method not allowed"
+
+	// 添加CORS响应头
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Length, Content-Type, Authorization, Connect-Protocol-Version, Connect-Accept-Encoding, Connect-Timeout-Ms, Connect-Codec-Compress-Bin")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Max-Age", "600")
+	}
+
 	http.Error(w, message, code)
 	log.Context(r.Context()).Errorw(
 		"source", "accesslog",
@@ -358,7 +412,7 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 				// 实际的路径修改应该在客户端RoundTripper中处理
 			}
 			if err != nil {
-				if errors.Is(err, jwt.NotAuthN) || errors.Is(err, rbac.NotAuthZ) {
+				if errors.Is(err, jwt.NotAuthN) || errors.Is(err, errorsConst.ErrPermissionDenied) {
 					break
 				}
 				markFailed(req, i, err)
@@ -370,7 +424,7 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 				markSuccess(req, i)
 				break
 			}
-			markFailed(req, i, errors.New("assertion failed"))
+			markFailed(req, i, errors.New(500, "ASSERTION_FAILED", "assertion failed"))
 			// continue the retry loop
 		}
 		if err != nil {

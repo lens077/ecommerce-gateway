@@ -3,7 +3,6 @@ package rbac
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	fileadapter "github.com/casbin/casbin/v2/persist/file-adapter"
 	config "github.com/go-kratos/gateway/api/gateway/config/v1"
 	"github.com/go-kratos/gateway/constants"
+	"github.com/go-kratos/gateway/errors"
 	"github.com/go-kratos/gateway/middleware"
 	"github.com/go-kratos/gateway/middleware/routerfilter"
 	"github.com/go-kratos/gateway/pkg/loader"
@@ -27,13 +27,11 @@ import (
 
 var (
 	logger               = log.NewHelper(log.With(log.DefaultLogger, "module", "middleware/rbac"))
-	NotAuthZ             = errors.New("权限不足")
 	syncedCachedEnforcer *casbin.SyncedCachedEnforcer
 	enforcerMutex        sync.RWMutex
 	cache                = NewCache(5*time.Minute, 10*time.Minute)
 	casdoorUrl           string
 	userOwner            string
-	userIdMetadataKey    = constants.UserIdMetadataKey
 	initialized          bool
 	localPolicyFile      string
 	localModelFile       string
@@ -118,15 +116,16 @@ func syncEssentialFiles(load *loader.ConsulFileLoader) error {
 func validateFileContent(path string) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("读取文件失败: %w", err)
+		logger.Errorf("[RBAC] %v:%v", errors.ErrFileContentEmptyMsg, path)
+		return errors.ErrFileContentEmpty
 	}
 
 	if len(content) == 0 {
-		logger.Warnf("检测到空文件: %s", path)
-		return errors.New("空文件")
+		logger.Warnf("[RBAC] 检测到空文件: %s", path)
+		return errors.ErrEmptyFile
 	}
 
-	logger.Debugf("文件验证通过: %s (大小: %d字节)", path, len(content))
+	logger.Debugf("[RBAC] 文件验证通过: %s (大小: %d字节)", path, len(content))
 	return nil
 }
 
@@ -144,18 +143,21 @@ func initializeEnforcer() error {
 
 	modelContent, err := os.ReadFile(localModelFile)
 	if err != nil {
-		return fmt.Errorf("读取模型文件失败: %w", err)
+		logger.Errorf("[RBAC] 读取模型文件失败: %v", err)
+		return errors.ErrFileContentEmpty
 	}
 
 	m, err := model.NewModelFromString(string(modelContent))
 	if err != nil {
-		return fmt.Errorf("创建模型失败: %w", err)
+		logger.Errorf("[RBAC] 创建模型失败: %v", err)
+		return errors.ErrFileContentEmpty
 	}
 
 	adapter := fileadapter.NewAdapter(localPolicyFile)
 	enforcer, err := casbin.NewSyncedCachedEnforcer(m, adapter)
 	if err != nil {
-		return fmt.Errorf("创建执行器失败: %w", err)
+		logger.Errorf("[RBAC] 创建执行器失败: %v", err)
+		return errors.ErrAuthCheckFailed
 	}
 
 	enforcerMutex.Lock()
@@ -182,8 +184,8 @@ func setupWatchers(load *loader.ConsulFileLoader) {
 }
 
 func onPolicyUpdate() {
-	logger.Info("检测到策略变更，开始处理...")
-	defer logger.Info("策略更新处理完成")
+	logger.Info("[RBAC] 检测到策略变更，开始处理...")
+	defer logger.Info("[RBAC] 策略更新处理完成")
 
 	load, err := loader.GetConsulLoader()
 	if err != nil {
@@ -196,25 +198,25 @@ func onPolicyUpdate() {
 		localPolicyFile,
 		validateFileContent,
 	); err != nil {
-		logger.Errorf("策略文件同步失败: %v", err)
+		logger.Errorf("[RBAC] 策略文件同步失败: %v", err)
 		return
 	}
 
 	enforcerMutex.RLock()
 	defer enforcerMutex.RUnlock()
 	if err := syncedCachedEnforcer.LoadPolicy(); err != nil {
-		logger.Errorf("策略重载失败: %v", err)
+		logger.Errorf("[RBAC] 策略重载失败: %v", err)
 	}
 }
 
 func onModelUpdate() {
-	logger.Info("检测到模型变更，开始处理...")
-	defer logger.Info("模型更新处理完成")
+	logger.Info("[RBAC] 检测到模型变更，开始处理...")
+	defer logger.Info("[RBAC] 模型更新处理完成")
 
 	// 新增文件同步逻辑
 	load, err := loader.GetConsulLoader()
 	if err != nil {
-		logger.Errorf("获取加载器失败: %v", err)
+		logger.Errorf("[RBAC] 获取加载器失败: %v", err)
 		return
 	}
 
@@ -223,13 +225,13 @@ func onModelUpdate() {
 		localModelFile,
 		validateFileContent,
 	); err != nil {
-		logger.Errorf("模型文件同步失败: %v", err)
+		logger.Errorf("[RBAC] 模型文件同步失败: %v", err)
 		return
 	}
 
 	// 重新初始化执行器
 	if err := initializeEnforcer(); err != nil {
-		logger.Errorf("模型重载失败: %v", err)
+		logger.Errorf("[RBAC] 模型重载失败: %v", err)
 	}
 }
 
@@ -299,13 +301,14 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 		// 创建路径匹配器
 		matcher, err := routerfilter.NewPathMatcher(rule.Path, rule.Methods)
 		if err != nil {
-			return nil, fmt.Errorf("创建路径匹配器失败: %w", err)
+			logger.Errorf("[RBAC] 创建路径匹配器失败: %v", err)
+			return nil, errors.ErrInvalidRequest
 		}
 		matchers = append(matchers, matcher)
 	}
 	return func(next http.RoundTripper) http.RoundTripper {
 		return middleware.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			logger.Debugf("Processing request: %s %s", req.Method, req.URL.Path)
+			logger.Debugf("[RBAC] Processing request: %s %s", req.Method, req.URL.Path)
 
 			// 使用PathMatcher 进行路径匹配
 			skipAuth := false
@@ -321,22 +324,25 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				return next.RoundTrip(req)
 			}
 
-			userID := req.Header.Get(userIdMetadataKey)
+			userID := req.Header.Get(constants.UserIdMetadataKey)
 			if userID == "" {
-				logger.Warnf("Missing user ID in request: %s", req.URL.Path)
-				return nil, fmt.Errorf("%w: 缺少用户标识", NotAuthZ)
+				logger.Warn("[RBAC] 无法获取用户ID")
+				return nil, errors.ErrPermissionDenied
 			}
 
 			role, err := getUserRoles(userID)
 			if err != nil {
-				return nil, fmt.Errorf("%w: 无法验证权限", err)
+				logger.Errorf("[RBAC] 无法获取用户角色: %v", err)
+				return nil, errors.ErrAuthCheckFailed
 			}
 
 			enforcerMutex.RLock()
 			defer enforcerMutex.RUnlock()
 			allowed, syncedErr := syncedCachedEnforcer.Enforce(role, req.URL.Path, req.Method)
 			if syncedErr != nil {
-				return nil, fmt.Errorf("权限检查错误: %w", syncedErr)
+				logger.Errorf("[RBAC] 无法校验该用户的权限: %v", syncedErr)
+
+				return nil, errors.ErrAuthCheckFailed
 			}
 
 			if allowed {
@@ -345,9 +351,9 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				req.Header.Set(constants.UserIdMetadataKey, userID)
 				return next.RoundTrip(req)
 			}
+			logger.Warnf("[RBAC] %v: 用户所属角色:%v 路由:%s 路径:%s", errors.ErrForbiddenRouteMsg, role, req.Method, req.URL.Path)
 
-			return nil, fmt.Errorf("%w: 角色%v无%s %s权限",
-				NotAuthZ, role, req.Method, req.URL.Path)
+			return nil, errors.ErrForbiddenRoute
 		})
 	}, nil
 }
@@ -368,7 +374,7 @@ func getUserRoles(userID string) (string, error) {
 
 func fetchRolesFromCasdoor(userID string) (string, error) {
 	url := fmt.Sprintf("%s/api/get-user?userId=%s", casdoorUrl, userID)
-	logger.Debugf("url2%s:", url)
+	logger.Debugf("[RBAC] 请求URL: %s", url)
 	req, _ := http.NewRequest("GET", url, nil)
 	q := req.URL.Query()
 	// q.Add("owner", userOwner)
@@ -377,12 +383,13 @@ func fetchRolesFromCasdoor(userID string) (string, error) {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("casdoor接口调用失败: %w", err)
+		logger.Errorf("[RBAC] casdoor接口调用失败: %v", err)
+		return "", errors.ErrServiceUnavailable
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
 		if err != nil {
-			log.Warnf("关闭响应体失败: %v", err)
+			logger.Warnf("[RBAC] 关闭响应体失败: %v", err)
 			return
 		}
 	}(resp.Body)
@@ -394,7 +401,8 @@ func fetchRolesFromCasdoor(userID string) (string, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("响应解析失败: %w", err)
+		logger.Errorf("[RBAC] 响应解析失败: %v", err)
+		return "", errors.ErrInvalidRequest
 	}
 
 	var role string
