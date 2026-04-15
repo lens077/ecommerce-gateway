@@ -13,6 +13,12 @@ const (
 	DiscoveryPrefix     = "ecommerce/gateway"
 	DiscoveryConfigPath = "DISCOVERY_CONFIG_PATH"
 
+	// Consul 配置选项
+	ConsulScheme            = "CONSUL_SCHEME"            // Consul 连接协议 (http/https)
+	ConsulInsecureSkipVerify = "CONSUL_INSECURE_SKIP_VERIFY" // 是否跳过 TLS 证书验证
+	ConsulToken             = "CONSUL_TOKEN"             // Consul ACL Token
+	ConsulDatacenter        = "CONSUL_DATACENTER"        // Consul 数据中心
+
 	// PriorityConfigDir 优先级配置目录
 	PriorityConfigDir = "PRIORITY_CONFIG"
 

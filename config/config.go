@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-kratos/gateway/constants"
 	"github.com/hashicorp/consul/api"
 
 	configv1 "github.com/go-kratos/gateway/api/gateway/config/v1"
@@ -64,7 +65,46 @@ func NewFileLoader(confPath string, priorityDirectory string) (*FileLoader, erro
 			return nil, fmt.Errorf("无效的 Consul 路径格式: %s", confPath)
 		}
 
-		client, err := api.NewClient(&api.Config{Address: parts[0]})
+		// 创建默认配置
+		c := api.DefaultConfig()
+		c.Address = parts[0]
+		
+		// 从环境变量读取默认值
+		if scheme := os.Getenv(constants.ConsulScheme); scheme != "" {
+			c.Scheme = scheme
+		} else if strings.HasSuffix(parts[0], ":443") {
+			// 如果端口是 443，默认使用 https
+			c.Scheme = "https"
+		} else {
+			c.Scheme = "http"
+		}
+		
+		// 从环境变量读取 TLS 配置
+		insecureSkipVerify := false
+		if insecureStr := os.Getenv(constants.ConsulInsecureSkipVerify); insecureStr != "" {
+			insecureSkipVerify = insecureStr == "true"
+		} else if c.Scheme == "https" {
+			// 如果使用 https，默认禁用证书验证（开发环境常见自签名证书）
+			insecureSkipVerify = true
+		}
+		
+		if insecureSkipVerify {
+			c.TLSConfig = api.TLSConfig{
+				InsecureSkipVerify: true,
+			}
+		}
+		
+		// 从环境变量读取 Token
+		if token := os.Getenv(constants.ConsulToken); token != "" {
+			c.Token = token
+		}
+		
+		// 从环境变量读取 Datacenter
+		if datacenter := os.Getenv(constants.ConsulDatacenter); datacenter != "" {
+			c.Datacenter = datacenter
+		}
+		
+		client, err := api.NewClient(c)
 		if err != nil {
 			return nil, fmt.Errorf("consul 客户端初始化失败: %+v", err)
 		}

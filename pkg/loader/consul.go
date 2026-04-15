@@ -17,6 +17,37 @@ import (
 	"github.com/hashicorp/consul/api"
 )
 
+// ConsulOption 定义 Consul 客户端配置选项
+type ConsulOption func(*api.Config)
+
+// WithConsulScheme 设置 Consul 连接协议
+func WithConsulScheme(scheme string) ConsulOption {
+	return func(c *api.Config) {
+		c.Scheme = scheme
+	}
+}
+
+// WithConsulTLSConfig 设置 Consul TLS 配置
+func WithConsulTLSConfig(tlsConfig api.TLSConfig) ConsulOption {
+	return func(c *api.Config) {
+		c.TLSConfig = tlsConfig
+	}
+}
+
+// WithConsulToken 设置 Consul ACL Token
+func WithConsulToken(token string) ConsulOption {
+	return func(c *api.Config) {
+		c.Token = token
+	}
+}
+
+// WithConsulDatacenter 设置 Consul 数据中心
+func WithConsulDatacenter(datacenter string) ConsulOption {
+	return func(c *api.Config) {
+		c.Datacenter = datacenter
+	}
+}
+
 var (
 	loaderInstance *ConsulFileLoader
 	loaderOnce     sync.Once
@@ -28,8 +59,52 @@ type ConsulFileLoader struct {
 	logger *log.Helper
 }
 
-func NewConsulFileLoader(address, prefix string) (*ConsulFileLoader, error) {
-	client, err := api.NewClient(&api.Config{Address: address})
+func NewConsulFileLoader(address, prefix string, options ...ConsulOption) (*ConsulFileLoader, error) {
+	// 创建默认配置
+	c := api.DefaultConfig()
+	c.Address = address
+	
+	// 从环境变量读取默认值
+	if scheme := os.Getenv(constants.ConsulScheme); scheme != "" {
+		c.Scheme = scheme
+	} else if strings.HasSuffix(address, ":443") {
+		// 如果端口是 443，默认使用 https
+		c.Scheme = "https"
+	} else {
+		c.Scheme = "http"
+	}
+	
+	// 从环境变量读取 TLS 配置
+	insecureSkipVerify := false
+	if insecureStr := os.Getenv(constants.ConsulInsecureSkipVerify); insecureStr != "" {
+		insecureSkipVerify = insecureStr == "true"
+	} else if c.Scheme == "https" {
+		// 如果使用 https，默认禁用证书验证（开发环境常见自签名证书）
+		insecureSkipVerify = true
+	}
+	
+	if insecureSkipVerify {
+		c.TLSConfig = api.TLSConfig{
+			InsecureSkipVerify: true,
+		}
+	}
+	
+	// 从环境变量读取 Token
+	if token := os.Getenv(constants.ConsulToken); token != "" {
+		c.Token = token
+	}
+	
+	// 从环境变量读取 Datacenter
+	if datacenter := os.Getenv(constants.ConsulDatacenter); datacenter != "" {
+		c.Datacenter = datacenter
+	}
+	
+	// 应用选项
+	for _, option := range options {
+		option(c)
+	}
+	
+	client, err := api.NewClient(c)
 	if err != nil {
 		return nil, err
 	}
@@ -51,18 +126,11 @@ func AtomicReplace(tempFile, targetFile string) error {
 func GetConsulLoader() (*ConsulFileLoader, error) {
 	loaderOnce.Do(func() {
 		addr := strings.TrimPrefix(os.Getenv(constants.DiscoveryDsn), "consul://")
-		client, err := api.NewClient(&api.Config{Address: addr})
+		loader, err := NewConsulFileLoader(addr, constants.DiscoveryPrefix)
 		if err != nil {
 			return
 		}
-		loaderInstance = &ConsulFileLoader{
-			Client: client,
-			Prefix: constants.DiscoveryPrefix,
-			logger: log.NewHelper(log.With(
-				log.DefaultLogger,
-				"module", "loader/consul",
-			)),
-		}
+		loaderInstance = loader
 	})
 	if loaderInstance == nil {
 		return nil, errors.New("初始化失败")

@@ -2,7 +2,10 @@ package consul
 
 import (
 	"net/url"
+	"os"
+	"strings"
 
+	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/gateway/discovery"
 	"github.com/go-kratos/kratos/contrib/registry/consul/v2"
 	"github.com/go-kratos/kratos/v2/registry"
@@ -17,14 +20,50 @@ func New(dsn *url.URL) (registry.Discovery, error) {
 	c := api.DefaultConfig()
 
 	c.Address = dsn.Host
+	
+	// 从环境变量读取默认值
+	if scheme := os.Getenv(constants.ConsulScheme); scheme != "" {
+		c.Scheme = scheme
+	} else if strings.HasSuffix(dsn.Host, ":443") {
+		// 如果端口是 443，默认使用 https
+		c.Scheme = "https"
+	} else {
+		c.Scheme = "http"
+	}
+	
+	// 从环境变量读取 TLS 配置
+	insecureSkipVerify := false
+	if insecureStr := os.Getenv(constants.ConsulInsecureSkipVerify); insecureStr != "" {
+		insecureSkipVerify = insecureStr == "true"
+	} else if c.Scheme == "https" {
+		// 如果使用 https，默认禁用证书验证（开发环境常见自签名证书）
+		insecureSkipVerify = true
+	}
+	
+	if insecureSkipVerify {
+		c.TLSConfig = api.TLSConfig{
+			InsecureSkipVerify: true,
+		}
+	}
+	
+	// 从 URL 查询参数或环境变量读取 Token
 	token := dsn.Query().Get("token")
+	if token == "" {
+		token = os.Getenv(constants.ConsulToken)
+	}
 	if token != "" {
 		c.Token = token
 	}
+	
+	// 从 URL 查询参数或环境变量读取 Datacenter
 	datacenter := dsn.Query().Get("datacenter")
+	if datacenter == "" {
+		datacenter = os.Getenv(constants.ConsulDatacenter)
+	}
 	if datacenter != "" {
 		c.Datacenter = datacenter
 	}
+	
 	client, err := api.NewClient(c)
 	if err != nil {
 		return nil, err

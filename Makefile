@@ -17,7 +17,19 @@ PLATFORM_2 ?= linux/arm64
 
 .PHONY: dev
 dev:
-	CASDOOR_URL=https://apikv.com:8081 \
+	CASDOOR_URL=https://casdoor.sumery.com \
+	DISCOVERY_DSN=consul://consul.sumery.com:443 \
+	DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
+	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
+	USE_TLS=false \
+	USE_HTTP3=false \
+	HTTP_PORT=8080 \
+	go run cmd/gateway/main.go
+
+.PHONY: pre
+pre:
+	CASDOOR_URL=https://casdoor.sumery.com \
 	DISCOVERY_DSN=consul://localhost:8500 \
 	DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
 	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
