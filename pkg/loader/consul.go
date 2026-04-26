@@ -63,17 +63,21 @@ func NewConsulFileLoader(address, prefix string, options ...ConsulOption) (*Cons
 	// 创建默认配置
 	c := api.DefaultConfig()
 	c.Address = address
-	
+
 	// 从环境变量读取默认值
 	if scheme := os.Getenv(constants.ConsulScheme); scheme != "" {
 		c.Scheme = scheme
 	} else if strings.HasSuffix(address, ":443") {
 		// 如果端口是 443，默认使用 https
 		c.Scheme = "https"
+	} else if !strings.Contains(address, ":") {
+		// 如果地址不包含端口（通常是 consul://host 格式），默认使用 https
+		// consul:// 前缀本身就表示使用 HTTPS
+		c.Scheme = "https"
 	} else {
 		c.Scheme = "http"
 	}
-	
+
 	// 从环境变量读取 TLS 配置
 	insecureSkipVerify := false
 	if insecureStr := os.Getenv(constants.ConsulInsecureSkipVerify); insecureStr != "" {
@@ -82,28 +86,28 @@ func NewConsulFileLoader(address, prefix string, options ...ConsulOption) (*Cons
 		// 如果使用 https，默认禁用证书验证（开发环境常见自签名证书）
 		insecureSkipVerify = true
 	}
-	
+
 	if insecureSkipVerify {
 		c.TLSConfig = api.TLSConfig{
 			InsecureSkipVerify: true,
 		}
 	}
-	
+
 	// 从环境变量读取 Token
 	if token := os.Getenv(constants.ConsulToken); token != "" {
 		c.Token = token
 	}
-	
+
 	// 从环境变量读取 Datacenter
 	if datacenter := os.Getenv(constants.ConsulDatacenter); datacenter != "" {
 		c.Datacenter = datacenter
 	}
-	
+
 	// 应用选项
 	for _, option := range options {
 		option(c)
 	}
-	
+
 	client, err := api.NewClient(c)
 	if err != nil {
 		return nil, err
@@ -125,8 +129,8 @@ func AtomicReplace(tempFile, targetFile string) error {
 
 func GetConsulLoader() (*ConsulFileLoader, error) {
 	loaderOnce.Do(func() {
-		addr := strings.TrimPrefix(os.Getenv(constants.DiscoveryDsn), "consul://")
-		loader, err := NewConsulFileLoader(addr, constants.DiscoveryPrefix)
+		addr := strings.TrimPrefix(os.Getenv(constants.ConsulAddr), "consul://")
+		loader, err := NewConsulFileLoader(addr, os.Getenv(constants.ConsulConfigPrefix))
 		if err != nil {
 			return
 		}
@@ -227,11 +231,11 @@ func DownloadEssentialFiles() {
 	}
 
 	// 获取环境变量并去除consul://前缀
-	dsn := strings.TrimPrefix(os.Getenv(constants.DiscoveryDsn), "consul://")
+	dsn := strings.TrimPrefix(os.Getenv(constants.ConsulAddr), "consul://")
 
 	fileLoader, err := NewConsulFileLoader(
 		dsn,
-		constants.DiscoveryPrefix,
+		os.Getenv(constants.ConsulConfigPrefix),
 	)
 	if err != nil {
 		log.Fatalf("Consul 文件加载器初始化失败: %v", err)

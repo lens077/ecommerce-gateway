@@ -5,19 +5,20 @@ const (
 	// UserOwner 用户组织
 	UserOwner = "OWNER"
 
-	ProxyAddrs = "PROXY_ADDRS"
-
-	// DiscoveryDsn 服务发现
-	DiscoveryDsn = "DISCOVERY_DSN"
-	// DiscoveryPrefix 服务发现前缀
-	DiscoveryPrefix     = "ecommerce/gateway"
-	DiscoveryConfigPath = "DISCOVERY_CONFIG_PATH"
-
-	// Consul 配置选项
-	ConsulScheme            = "CONSUL_SCHEME"            // Consul 连接协议 (http/https)
-	ConsulInsecureSkipVerify = "CONSUL_INSECURE_SKIP_VERIFY" // 是否跳过 TLS 证书验证
-	ConsulToken             = "CONSUL_TOKEN"             // Consul ACL Token
-	ConsulDatacenter        = "CONSUL_DATACENTER"        // Consul 数据中心
+	// ConsulAddr Consul 服务发现地址
+	ConsulAddr = "CONSUL_ADDR"
+	// ConsulConfigPrefix Consul 作为配置中心时的配置文件前缀
+	ConsulConfigPrefix = "CONSUL_CONFIG_PREFIX"
+	// ConsulConfigPath Consul 作为配置中心时的配置文件路径
+	ConsulConfigPath = "CONSUL_CONFIG_PATH"
+	// ConsulScheme Consul服务器的连接协议(http/https)
+	ConsulScheme = "CONSUL_SCHEME"
+	// ConsulInsecureSkipVerify 是否跳过 TLS 证书验证
+	ConsulInsecureSkipVerify = "CONSUL_INSECURE_SKIP_VERIFY"
+	// ConsulToken Consul ACL Token
+	ConsulToken = "CONSUL_TOKEN"
+	// ConsulDatacenter Consul 数据中心
+	ConsulDatacenter = "CONSUL_DATACENTER"
 
 	// PriorityConfigDir 优先级配置目录
 	PriorityConfigDir = "PRIORITY_CONFIG"

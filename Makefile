@@ -18,8 +18,9 @@ PLATFORM_2 ?= linux/arm64
 .PHONY: dev
 dev:
 	CASDOOR_URL=https://casdoor.sumery.com \
-	DISCOVERY_DSN=consul://consul.sumery.com:443 \
-	DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	CONSUL_ADDR=consul://consul.sumery.com:443 \
+	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
 	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
 	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
 	USE_TLS=false \
@@ -30,8 +31,9 @@ dev:
 .PHONY: pre
 pre:
 	CASDOOR_URL=https://casdoor.sumery.com \
-	DISCOVERY_DSN=consul://localhost:8500 \
-	DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	CONSUL_ADDR=consul://localhost:8500 \
+	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
 	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
 	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
 	USE_TLS=false \
@@ -42,8 +44,9 @@ pre:
 .PHONY: run
 run:
 	CASDOOR_URL=https://apikv.com:8081 \
-	DISCOVERY_DSN=consul://apikv.com:8500 \
-	DISCOVERY_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	CONSUL_ADDR=consul://apikv.com:8500 \
+	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
+	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
 	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
 	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
 	USE_TLS=false \

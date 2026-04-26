@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/go-kratos/gateway/middleware/ip"
+	"github.com/go-kratos/kratos/v2/log"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/go-kratos/gateway/client"
 	"github.com/go-kratos/gateway/config"
@@ -41,43 +44,44 @@ import (
 	_ "github.com/go-kratos/gateway/middleware/transcoder"   // 编解码中间件
 
 	"github.com/go-kratos/kratos/v2"
-	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/registry"
 )
 
 var (
 	ctrlName          string
 	ctrlService       string
-	discoveryDSN      string
+	consulAddr        string
 	proxyConfig       string
 	priorityConfigDir string
 	withDebug         bool
 )
 
 func init() {
-	initConfig() // 1. 读取基础环境变量
-	// if !loader.IsLocalMode() {
+	initConfig()
 	loader.DownloadEssentialFiles()
-	// }
 }
 
 func main() {
-	// 3. 加载主配置（会设置环境变量）
+	sugar := initLogger()
+	logger := sugar.Sugar()
+	defer logger.Sync() // 确保日志刷盘
+
+	// 加载主配置（会设置环境变量）
 	confLoader, err := config.NewFileLoader(proxyConfig, priorityConfigDir)
 	if err != nil {
-		log.Fatalf("配置加载器初始化失败: %v", err)
+		logger.Fatalf("配置加载器初始化失败: %v", err)
 	}
 	defer confLoader.Close()
 
 	bc, loadErr := confLoader.Load(context.Background())
 	if loadErr != nil {
-		log.Fatalf("配置加载失败: %v", loadErr)
+		logger.Fatalf("配置加载失败: %v", loadErr)
 	}
 
 	// 4. 将配置中的envs注入环境变量
 	for k, v := range bc.Envs {
 		if err := os.Setenv(k, v); err != nil {
-			log.Warnf("设置环境变量失败 %s: %v", k, err)
+			logger.Warnf("设置环境变量失败 %s: %v", k, err)
 		}
 		fmt.Printf("设置环境变量 %s: %v\n", k, v)
 	}
@@ -86,13 +90,13 @@ func main() {
 	// JWT 中间件初始化
 	jwtErr := jwt.Init()
 	if jwtErr != nil {
-		log.Fatalf("JWT 中间件初始化失败: %v", jwtErr)
+		logger.Fatalf("JWT 中间件初始化失败: %v", jwtErr)
 	}
 
 	// RBAC 中间件初始化
 	rbacErr := rbac.InitEnforcer()
 	if rbacErr != nil {
-		log.Fatalf("RBAC 中间件初始化失败: %v", jwtErr)
+		logger.Fatalf("RBAC 中间件初始化失败: %v", jwtErr)
 		return
 	}
 
@@ -104,7 +108,7 @@ func main() {
 	// 创建代理 New 函数会创建基本的路由 不会根据配置端点创建路由
 	p, err := proxy.New(clientFactory, middleware.Create)
 	if err != nil {
-		log.Fatalf("failed to new proxy: %v", err)
+		logger.Fatalf("failed to new proxy: %v", err)
 	}
 	circuitbreaker.Init(clientFactory)
 
@@ -112,13 +116,13 @@ func main() {
 	ctx := context.Background()
 	var ctrlLoader *configLoader.CtrlConfigLoader
 	if ctrlService != "" {
-		log.Infof("setup control service to: %q", ctrlService)
+		logger.Infof("setup control service to: %q", ctrlService)
 		ctrlLoader = configLoader.New(ctrlName, ctrlService, proxyConfig, priorityConfigDir)
 		if err := ctrlLoader.Load(ctx); err != nil {
-			log.Errorf("failed to do initial load from control service: %v, using local config instead", err)
+			logger.Errorf("failed to do initial load from control service: %v, using local config instead", err)
 		}
 		if err := ctrlLoader.LoadFeatures(ctx); err != nil {
-			log.Errorf("failed to do initial feature load from control service: %v, using default value instead", err)
+			logger.Errorf("failed to do initial feature load from control service: %v, using default value instead", err)
 		}
 		go ctrlLoader.Run(ctx)
 	}
@@ -126,25 +130,25 @@ func main() {
 	defer confLoader.Close()
 	// bc, err := confLoader.Load(context.Background())
 	// if err != nil {
-	// 	log.Fatalf("failed to load config: %v", err)
+	// 	logger.Fatalf("failed to load config: %v", err)
 	// }
 
 	// 更新服务端点配置(包括中间件) 会重置路由表 根据端点配置，创建路由处理器
 	// 路由处理器中 包含一个客户端以及中间件调用链
 	if err := p.Update(bc); err != nil {
-		log.Fatalf("failed to update service config bc: %v", err)
+		logger.Fatalf("failed to update service config bc: %v", err)
 	}
 	reloader := func() error {
 		bc, err := confLoader.Load(context.Background())
 		if err != nil {
-			log.Errorf("failed to load config: %v", err)
+			logger.Errorf("failed to load config: %v", err)
 			return err
 		}
 		if err := p.Update(bc); err != nil {
-			log.Errorf("failed to update service config: %v", err)
+			logger.Errorf("failed to update service config: %v", err)
 			return err
 		}
-		log.Infof("config reloaded")
+		logger.Infof("config reloaded")
 		return nil
 	}
 	confLoader.Watch(reloader)
@@ -169,7 +173,7 @@ func main() {
 		),
 	)
 	if err := app.Run(); err != nil {
-		log.Errorf("failed to run servers: %v", err)
+		logger.Errorf("failed to run servers: %v", err)
 	}
 }
 
@@ -178,7 +182,7 @@ func initConfig() {
 	rand.Seed(uint64(time.Now().Nanosecond()))
 
 	withDebug = os.Getenv(constants.Debug) == "true"
-	proxyConfig = os.Getenv(constants.DiscoveryConfigPath)
+	proxyConfig = os.Getenv(constants.ConsulConfigPath)
 	if proxyConfig == "" {
 		proxyConfig = "config.yaml" // 默认值
 	}
@@ -188,25 +192,55 @@ func initConfig() {
 		ctrlName = os.Getenv("advertiseName")
 	}
 	ctrlService = os.Getenv("ctrlService")
-	discoveryDSN = os.Getenv(constants.DiscoveryDsn)
-	if discoveryDSN == "" {
-		discoveryDSN = "localhost:8500"
+	consulAddr = os.Getenv(constants.ConsulAddr)
+	if consulAddr == "" {
+		consulAddr = "localhost:8500"
 	}
 	// 自动组合Consul配置路径
-	if discoveryDSN != "" && !strings.HasPrefix(proxyConfig, "consul://") {
-		// 去除discoveryDSN可能包含的consul://前缀
-		discoveryAddr := strings.TrimPrefix(discoveryDSN, "consul://")
+	if consulAddr != "" && !strings.HasPrefix(proxyConfig, "consul://") {
+		// 去除consulAddr可能包含的consul://前缀
+		discoveryAddr := strings.TrimPrefix(consulAddr, "consul://")
 		proxyConfig = fmt.Sprintf("consul://%s/%s", discoveryAddr, proxyConfig)
 	}
 }
 
 func makeDiscovery() registry.Discovery {
-	if discoveryDSN == "" {
+	if consulAddr == "" {
 		return nil
 	}
-	d, err := discovery.Create(discoveryDSN)
+	d, err := discovery.Create(consulAddr)
 	if err != nil {
 		log.Fatalf("failed to create discovery: %v", err)
 	}
 	return d
+}
+
+func initLogger() *zap.Logger {
+	// 1. 获取环境变量，设置默认级别为 info
+	lvlStr := os.Getenv("LOG_LEVEL")
+	if lvlStr == "" {
+		lvlStr = "info"
+	}
+
+	// 2. 解析字符串级别 (如 "debug", "info", "error")
+	var level zapcore.Level
+	if err := level.UnmarshalText([]byte(lvlStr)); err != nil {
+		level = zap.InfoLevel // 如果解析失败，回退到 info
+	}
+
+	// 3. 根据环境选择基础配置
+	var config zap.Config
+	if os.Getenv("LOG_FORMAT") == "console" {
+		config = zap.NewDevelopmentConfig()
+		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	} else {
+		config = zap.NewProductionConfig()
+		config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	}
+
+	// 4. 将解析出的级别注入配置
+	config.Level = zap.NewAtomicLevelAt(level)
+
+	logger, _ := config.Build()
+	return logger
 }
