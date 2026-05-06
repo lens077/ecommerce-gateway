@@ -8,7 +8,7 @@ api:
  	  --go_out=paths=source_relative:./api \
 	  $(API_PROTO_FILES)
 
-REPOSITORY ?= harbor.apikv.com:5443/ecommerce/gateway
+REPOSITORY ?= ccr.ccs.tencentyun.com/sumery/ecommerce-gateway
 GOIMAGE ?= golang:1.24.0-alpine3.21
 VERSION ?= latest
 GATEWAY_PORT ?= 8080
