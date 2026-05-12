@@ -12,3 +12,5 @@ data:
   USE_TLS: "false"
   USE_HTTP3: "false"
   HTTP_PORT: "8080"
+  CONSUL_SCHEME: "https"
+  CONSUL_INSECURE_SKIP_VERIFY: "true"

@@ -2,6 +2,8 @@ package tracing
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net/http"
@@ -120,6 +122,18 @@ func newTracerProvider(ctx context.Context, options *v1.Tracing) trace.TracerPro
 	if options.Insecure != nil && *options.Insecure {
 		otlpoptions = append(otlpoptions, otlptracehttp.WithInsecure())
 	}
+
+	if options.Tls != nil && options.Tls.Enable {
+		tlsConf := &tls.Config{InsecureSkipVerify: options.Tls.InsecureSkipVerify}
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM([]byte(options.Tls.CaPem)); !ok {
+			tlsConf.RootCAs = caCertPool
+		} else {
+			log.Fatalf("failed to append ca cert")
+		}
+		otlptracehttp.WithTLSClientConfig(tlsConf)
+	}
+	log.Println("options", options)
 
 	client := otlptracehttp.NewClient(
 		otlpoptions...,

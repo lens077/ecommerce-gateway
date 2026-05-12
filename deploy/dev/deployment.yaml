@@ -17,11 +17,14 @@ spec:
     spec:
       containers:
         - name: ecommerce-gateway
-          image: harbor.apikv.com:5443/ecommerce/gateway:latest
+          image: ccr.ccs.tencentyun.com/sumery/ecommerce-gateway:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
               protocol: TCP
+          env:
+            - name: CONSUL_ADDR
+              value: consul://consul-server.consul.svc.cluster.local:8501
           envFrom:
             - configMapRef:
                 name: ecommerce-gateway-config

@@ -15,4 +15,11 @@ message Tracing {
 	google.protobuf.Duration timeout = 4;
 	// ssl
 	optional bool insecure = 5;
+
+	TLS tls = 6;
+	message TLS {
+		bool enable = 1;
+		string ca_pem = 2;
+		bool insecure_skip_verify = 3;
+	}
 }
