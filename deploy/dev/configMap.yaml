@@ -3,8 +3,8 @@ kind: ConfigMap
 metadata:
   name: ecommerce-gateway-config
 data:
-  OWNER: "ecommerce"
-  CASDOOR_URL: "https://apikv.com:8081"
+  OWNER: "org-ecommerce"
+  CASDOOR_URL: "http://apikv.com:8000"
   CONSUL_ADDR: "consul://consul-server.consul.svc.cluster.local:8501"
   CONSUL_CONFIG_PATH: "ecommerce/gateway/config.yaml"
   CONSUL_CONFIG_PREFIX: "ecommerce/gateway"

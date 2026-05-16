@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	config "github.com/go-kratos/gateway/api/gateway/config/v1"
 
@@ -23,7 +24,11 @@ type Factory func(*config.Endpoint) (Client, error)
 
 type Option func(*options)
 type options struct {
-	pickerBuilder selector.Builder
+	pickerBuilder        selector.Builder
+	enableHealthCheck    bool
+	healthCheckInterval  time.Duration
+	healthCheckTimeout   time.Duration
+	maxHealthCheckRetries int
 }
 
 func WithPickerBuilder(in selector.Builder) Option {
@@ -32,27 +37,77 @@ func WithPickerBuilder(in selector.Builder) Option {
 	}
 }
 
+// WithHealthCheck 启用健康检查
+func WithHealthCheck(enable bool) Option {
+	return func(o *options) {
+		o.enableHealthCheck = enable
+	}
+}
+
+// WithHealthCheckInterval 设置健康检查间隔
+func WithHealthCheckInterval(interval time.Duration) Option {
+	return func(o *options) {
+		o.healthCheckInterval = interval
+	}
+}
+
+// WithHealthCheckTimeout 设置健康检查超时时间
+func WithHealthCheckTimeout(timeout time.Duration) Option {
+	return func(o *options) {
+		o.healthCheckTimeout = timeout
+	}
+}
+
 // NewFactory new a client factory.
 func NewFactory(r registry.Discovery, opts ...Option) Factory {
 	o := &options{
-		pickerBuilder: p2c.NewBuilder(),
+		pickerBuilder:        p2c.NewBuilder(),
+		enableHealthCheck:    true, // 默认启用健康检查
+		healthCheckInterval:  10 * time.Second,
+		healthCheckTimeout:   2 * time.Second,
+		maxHealthCheckRetries: 3,
 	}
 	for _, opt := range opts {
 		opt(o)
 	}
+
 	return func(endpoint *config.Endpoint) (Client, error) {
 		picker := o.pickerBuilder.Build()
 		ctx, cancel := context.WithCancel(context.Background())
+
+		// 创建健康检查器（如果启用）
+		var healthChecker HealthChecker
+		if o.enableHealthCheck {
+			healthChecker = NewHealthChecker(
+				nil, // 初始节点为空，稍后通过 Callback 更新
+				WithCheckInterval(o.healthCheckInterval),
+				WithCheckTimeout(o.healthCheckTimeout),
+				WithMaxFailures(o.maxHealthCheckRetries),
+			)
+			healthChecker.Start()
+			log.Infof("Health checker enabled for endpoint: %s", endpoint.Path)
+		}
+
 		applier := &nodeApplier{
-			cancel:   cancel,
-			endpoint: endpoint,
-			registry: r,
-			picker:   picker,
+			cancel:        cancel,
+			endpoint:      endpoint,
+			registry:      r,
+			picker:        picker,
+			healthChecker: healthChecker,
 		}
 		if err := applier.apply(ctx); err != nil {
+			if healthChecker != nil {
+				healthChecker.Stop()
+			}
 			return nil, err
 		}
-		client := newClient(applier, picker)
+
+		// 创建客户端（带健康检查）
+		clientOpts := []ClientOption{}
+		if healthChecker != nil {
+			clientOpts = append(clientOpts, WithHealthChecker(healthChecker))
+		}
+		client := newClient(applier, picker, clientOpts...)
 
 		// 如果是gRPC请求且路径以*结尾，创建grpcClient包装器
 		// 例如：path: /search*，请求路径 /search/v1.SearchService/Search -> /v1.SearchService/Search
@@ -112,14 +167,20 @@ func (c *grpcClient) Close() error {
 }
 
 type nodeApplier struct {
-	canceled int64
-	cancel   context.CancelFunc
-	endpoint *config.Endpoint
-	registry registry.Discovery
-	picker   selector.Selector
+	canceled        int64
+	cancel          context.CancelFunc
+	endpoint        *config.Endpoint
+	registry        registry.Discovery
+	picker          selector.Selector
+	healthChecker   HealthChecker
+	ctx             context.Context
+	refreshTicker   *time.Ticker
 }
 
 func (na *nodeApplier) apply(ctx context.Context) error {
+	// 保存 ctx
+	na.ctx = ctx
+	
 	var nodes []selector.Node
 	for _, backend := range na.endpoint.Backends {
 		target, err := parseTarget(backend.Target)
@@ -143,11 +204,44 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 			if existed {
 				log.Infof("watch target %+v already existed", target)
 			}
+			
+			// 启动定期刷新机制，确保即使 watcher 不工作，也能获取最新的服务列表
+			na.startRefreshLoop(target.Endpoint)
 		default:
 			return fmt.Errorf("unknown scheme: %s", target.Scheme)
 		}
 	}
 	return nil
+}
+
+// startRefreshLoop 启动定期刷新服务列表的循环
+func (na *nodeApplier) startRefreshLoop(serviceName string) {
+	na.refreshTicker = time.NewTicker(15 * time.Second)
+	
+	go func() {
+		for {
+			select {
+			case <-na.ctx.Done():
+				na.refreshTicker.Stop()
+				return
+			case <-na.refreshTicker.C:
+				// 主动从 Consul 获取最新的服务列表
+				services, err := na.registry.GetService(na.ctx, serviceName)
+				if err != nil {
+					log.Warnf("Failed to refresh service list for %s: %v", serviceName, err)
+					continue
+				}
+				if len(services) == 0 {
+					log.Warnf("Empty service list for %s during refresh", serviceName)
+					continue
+				}
+				
+				log.Infof("Refreshed service list for %s, got %d instances", serviceName, len(services))
+				// 更新服务列表
+				na.Callback(services)
+			}
+		}
+	}()
 }
 
 var _defaultWeight = int64(10)
@@ -196,7 +290,16 @@ func (na *nodeApplier) Callback(services []*registry.ServiceInstance) error {
 		node := newNode(addr, na.endpoint.Protocol, nodeWeight(ser), ser.Metadata, ser.Version, ser.Name)
 		nodes = append(nodes, node)
 	}
+
+	// 更新选择器的节点列表
 	na.picker.Apply(nodes)
+
+	// 更新健康检查器的节点列表（如果启用了健康检查）
+	if na.healthChecker != nil {
+		na.healthChecker.updateNodes(nodes)
+		log.Infof("Updated health checker nodes for endpoint: %s, count: %d", na.endpoint.Path, len(nodes))
+	}
+
 	return nil
 }
 

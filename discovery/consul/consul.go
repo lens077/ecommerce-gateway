@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/gateway/discovery"
@@ -20,6 +21,10 @@ func New(dsn *url.URL) (registry.Discovery, error) {
 	c := api.DefaultConfig()
 
 	c.Address = dsn.Host
+	
+	// 设置 Consul 阻塞查询的最大等待时间
+	// 这个设置影响服务发现的更新频率，较短的时间可以更快地获取服务变化
+	c.WaitTime = 10 * time.Second
 	
 	// 从环境变量读取默认值
 	if scheme := os.Getenv(constants.ConsulScheme); scheme != "" {
