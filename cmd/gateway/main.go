@@ -8,21 +8,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-kratos/gateway/middleware/ip"
-	"github.com/go-kratos/kratos/v2/log"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-
 	"github.com/go-kratos/gateway/client"
 	"github.com/go-kratos/gateway/config"
 	configLoader "github.com/go-kratos/gateway/config/config-loader"
 	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/gateway/discovery"
 	"github.com/go-kratos/gateway/middleware"
+	"github.com/go-kratos/gateway/middleware/ip"
 	"github.com/go-kratos/gateway/middleware/jwt"
 	"github.com/go-kratos/gateway/middleware/rbac"
 	"github.com/go-kratos/gateway/pkg/loader"
 	"github.com/go-kratos/gateway/proxy/auth"
+	"github.com/go-kratos/kratos/v2/log"
 	"golang.org/x/exp/rand"
 
 	"github.com/go-kratos/gateway/proxy"
@@ -54,6 +51,7 @@ var (
 	proxyConfig       string
 	priorityConfigDir string
 	withDebug         bool
+	logger            = log.NewHelper(log.With(log.DefaultLogger, "module", "cmd/main"))
 )
 
 func init() {
@@ -62,10 +60,6 @@ func init() {
 }
 
 func main() {
-	sugar := initLogger()
-	logger := sugar.Sugar()
-	defer logger.Sync() // 确保日志刷盘
-
 	// 加载主配置（会设置环境变量）
 	confLoader, err := config.NewFileLoader(proxyConfig, priorityConfigDir)
 	if err != nil {
@@ -83,7 +77,7 @@ func main() {
 		if err := os.Setenv(k, v); err != nil {
 			logger.Warnf("设置环境变量失败 %s: %v", k, err)
 		}
-		fmt.Printf("设置环境变量 %s: %v\n", k, v)
+		logger.Infof("设置环境变量 %s: %v\n", k, v)
 	}
 
 	// 5. 初始化中间件
@@ -139,19 +133,30 @@ func main() {
 		logger.Fatalf("failed to update service config bc: %v", err)
 	}
 	reloader := func() error {
+		logger.Info("reloader: 开始加载配置...")
+
 		bc, err := confLoader.Load(context.Background())
 		if err != nil {
 			logger.Errorf("failed to load config: %v", err)
+
 			return err
 		}
+		logger.Info("reloader: 配置加载成功，开始更新路由...")
+
 		if err := p.Update(bc); err != nil {
 			logger.Errorf("failed to update service config: %v", err)
+
 			return err
 		}
 		logger.Infof("config reloaded")
+
 		return nil
 	}
 	confLoader.Watch(reloader)
+
+	// 刷新日志缓冲区
+	logger.Infof("配置监听已注册完成，准备构建处理器...")
+	// 刷新日志缓冲区
 
 	var serverHandler http.Handler = p
 	if withDebug {
@@ -165,6 +170,10 @@ func main() {
 
 	serverHandler = auth.Handler(serverHandler)
 
+	// 刷新日志缓冲区
+	logger.Info("准备启动 Kratos 应用...")
+	// 刷新日志缓冲区
+
 	app := kratos.New(
 		kratos.Name(bc.Name),
 		kratos.Context(ctx),
@@ -172,9 +181,18 @@ func main() {
 			server.NewProxy(serverHandler),
 		),
 	)
+
+	// 刷新日志缓冲区
+	logger.Info("Kratos 应用已创建，准备运行...")
+	// 刷新日志缓冲区
+
 	if err := app.Run(); err != nil {
 		logger.Errorf("failed to run servers: %v", err)
 	}
+
+	// 刷新日志缓冲区
+	logger.Info("Kratos 应用已退出")
+	// 刷新日志缓冲区
 }
 
 // 从环境变量读取配置
@@ -210,37 +228,7 @@ func makeDiscovery() registry.Discovery {
 	}
 	d, err := discovery.Create(consulAddr)
 	if err != nil {
-		log.Fatalf("failed to create discovery: %v", err)
+		logger.Fatalf("failed to create discovery: %v", err)
 	}
 	return d
-}
-
-func initLogger() *zap.Logger {
-	// 1. 获取环境变量，设置默认级别为 info
-	lvlStr := os.Getenv("LOG_LEVEL")
-	if lvlStr == "" {
-		lvlStr = "info"
-	}
-
-	// 2. 解析字符串级别 (如 "debug", "info", "error")
-	var level zapcore.Level
-	if err := level.UnmarshalText([]byte(lvlStr)); err != nil {
-		level = zap.InfoLevel // 如果解析失败，回退到 info
-	}
-
-	// 3. 根据环境选择基础配置
-	var config zap.Config
-	if os.Getenv("LOG_FORMAT") == "console" {
-		config = zap.NewDevelopmentConfig()
-		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	} else {
-		config = zap.NewProductionConfig()
-		config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	}
-
-	// 4. 将解析出的级别注入配置
-	config.Level = zap.NewAtomicLevelAt(level)
-
-	logger, _ := config.Build()
-	return logger
 }

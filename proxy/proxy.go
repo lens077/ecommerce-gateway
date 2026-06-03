@@ -502,19 +502,45 @@ func closeOnError(closer io.Closer, err *error) {
 }
 
 // Update updates service endpoint.
+// 添加容错机制：当某个后端服务不可用时，只记录警告日志，不影响网关启动
 func (p *Proxy) Update(c *config.Gateway) (retError error) {
 	router := mux.NewRouter(http.HandlerFunc(notFoundHandler), http.HandlerFunc(methodNotAllowedHandler))
+	failedEndpoints := []string{}
+	successCount := 0
+	
 	for _, e := range c.Endpoints {
 		handler, closer, err := p.buildEndpoint(e, c.Middlewares)
 		if err != nil {
-			return err
+			// 记录失败的后端服务，但继续处理其他 endpoint
+			log.Warnf("Failed to build endpoint [%s] %s %s: %v, this endpoint will be skipped but gateway will continue starting", 
+				e.Protocol, e.Method, e.Path, err)
+			failedEndpoints = append(failedEndpoints, fmt.Sprintf("%s(%s)", e.Path, e.Protocol))
+			continue
 		}
 		defer closeOnError(closer, &retError)
 		if err = router.Handle(e.Path, e.Method, e.Host, handler, closer); err != nil {
-			return err
+			log.Warnf("Failed to register route [%s] %s %s: %v, this endpoint will be skipped but gateway will continue starting", 
+				e.Protocol, e.Method, e.Path, err)
+			failedEndpoints = append(failedEndpoints, fmt.Sprintf("%s(route error)", e.Path))
+			continue
 		}
 		log.Infof("build endpoint: [%s] %s %s", e.Protocol, e.Method, e.Path)
+		successCount++
 	}
+	
+	// 如果所有 endpoint 都失败，返回错误
+	if successCount == 0 && len(c.Endpoints) > 0 {
+		return fmt.Errorf("all %d endpoints failed to build, last error: %v", len(c.Endpoints), retError)
+	}
+	
+	// 记录启动摘要
+	if len(failedEndpoints) > 0 {
+		log.Warnf("Gateway started with %d/%d endpoints available. Failed endpoints: %v", 
+			successCount, len(c.Endpoints), failedEndpoints)
+	} else {
+		log.Infof("Gateway started successfully with all %d endpoints", successCount)
+	}
+	
 	old := p.router.Swap(router)
 	tryCloseRouter(old)
 	return nil

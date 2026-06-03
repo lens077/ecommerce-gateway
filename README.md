@@ -32,7 +32,7 @@ version: v1.4.0
 # 环境变量
 envs:
   # 服务发现
-  DISCOVERY_DSN: consul://localhost:8500
+  CONSUL_ADDR: consul://localhost:8500
   # 服务发现配置路径
   DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
   # 输出的日志等级
@@ -188,6 +188,57 @@ endpoints:
 ```
 
 
+## 环境变量
+
+网关支持以下环境变量配置：
+
+| 环境变量 | 说明 | 默认值 | 示例 |
+| :--- | :--- | :--- | :--- |
+| `OWNER` | 用户组织标识 | - | `org-ecommerce` |
+| `CONSUL_ADDR` | Consul 服务发现地址 | `consul://localhost:8500` | `consul://consul.sumery.com:443` |
+| `CONSUL_CONFIG_PREFIX` | Consul 配置文件前缀 | - | `ecommerce/gateway` |
+| `CONSUL_CONFIG_PATH` | Consul 配置文件路径 | `config.yaml` | `ecommerce/gateway/config.yaml` |
+| `CONSUL_SCHEME` | Consul 连接协议 | 根据端口自动判断 | `http` 或 `https` |
+| `CONSUL_INSECURE_SKIP_VERIFY` | 是否跳过 TLS 证书验证 | `true`（HTTPS时） | `true` 或 `false` |
+| `CONSUL_TOKEN` | Consul ACL Token | - | `my-consul-token` |
+| `CONSUL_DATACENTER` | Consul 数据中心 | - | `dc1` |
+| `PRIORITY_CONFIG` | 优先级配置目录 | - | `./dynamic-config` |
+| `JWT_PUBKEY_PATH` | JWT 公钥文件路径 | `configs/secrets/public.pem` | `configs/secrets/public.pem` |
+| `USE_TLS` | 是否启用 TLS | `false` | `true` 或 `false` |
+| `USE_HTTP3` | 是否启用 HTTP/3 | `false` | `true` 或 `false` |
+| `HTTP_PORT` | HTTP/1.1 & HTTP/2 监听端口 | `:8080` | `:8080` |
+| `HTTP3_PORT` | HTTP/3 监听端口（UDP） | `:443` | `:443` |
+| `TLS_DIR` | TLS 证书目录 | `configs/tls` | `configs/tls` |
+| `CRT_FILE_PATH` | TLS 证书文件路径 | `configs/tls/gateway.crt` | `configs/tls/gateway.crt` |
+| `KEY_FILE_PATH` | TLS 密钥文件路径 | `configs/tls/gateway.key` | `configs/tls/gateway.key` |
+| `POLICIES_FILE_PATH` | RBAC 策略文件路径 | `configs/rbac/policies.csv` | `configs/rbac/policies.csv` |
+| `MODEL_FILE_PATH` | RBAC 模型文件路径 | `configs/rbac/model.conf` | `configs/rbac/model.conf` |
+| `CASDOOR_URL` | Casdoor 认证服务地址 | - | `https://casdoor.sumery.com` |
+| `Debug` | 是否启用调试模式 | `false` | `true` 或 `false` |
+| `SERVICE_NAME` | 服务名称 | - | `gateway` |
+| `SERVICE_ADDR` | 服务地址 | - | `0.0.0.0` |
+| `SERVICE_PORT` | 服务端口 | - | `8080` |
+| `SERVICE_WEIGHT` | 服务权重 | - | `10` |
+| `SERVICE_TAGS` | 服务标签 | - | `production,gateway` |
+| `PROXY_READ_HEADER_TIMEOUT` | 代理读取请求头超时时间 | `10s` | `15s` |
+| `PROXY_READ_TIMEOUT` | 代理读取超时时间 | `15s` | `20s` |
+| `PROXY_WRITE_TIMEOUTT` | 代理写入超时时间 | `15s` | `20s` |
+| `PROXY_IDLE_TIMEOUT` | 代理连接空闲超时时间 | `120s` | `60s` |
+
+### 环境变量配置优先级
+
+环境变量可以通过以下方式设置（优先级从高到低）：
+
+1. **启动命令行参数**（如 `make dev` 中设置的环境变量）
+2. **Consul KV 配置**（通过 `envs` 字段注入）
+3. **系统环境变量**
+
+### 配置文件示例
+
+完整的配置文件示例参考 [configs/config.yaml](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/configs/config.yaml)。
+
+---
+
 ## TLS
 1. 开发测试时可以使用自签名证书, 生产需要使用真实的证书, 项目支持自签名证书的生成, 可以使用以下命令生成自签名证书:
 ```bash
@@ -207,7 +258,7 @@ make https
 ```yaml
 envs:
   # 服务发现
-  DISCOVERY_DSN: consul://example.com:8500
+  CONSUL_ADDR: consul://example.com:8500
   # 服务发现配置路径
   DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
   # 是否使用 TLS, 为 true 则使用, 需要配置CRT_FILE_PATH和KEY_FILE_PATH参数, 指定相对于入口文件(main.go)执行的路径

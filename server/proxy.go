@@ -13,14 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-kratos/kratos/v2/log"
 	"github.com/quic-go/quic-go"
 
 	"github.com/go-kratos/gateway/constants"
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-
-	"github.com/go-kratos/kratos/v2/log"
 )
 
 var (
@@ -28,6 +27,7 @@ var (
 	readTimeout       = time.Second * 15
 	writeTimeout      = time.Second * 15
 	idleTimeout       = time.Second * 120
+	logger            = log.NewHelper(log.With(log.DefaultLogger, "module", "server/proxy"))
 )
 
 func init() {
@@ -77,6 +77,9 @@ func NewProxy(handler http.Handler) *ProxyServer {
 		http3Port = constants.DefaultHTTP3Port
 	}
 
+	logger.Infof("httpPort%v", httpPort)
+	logger.Infof("http3Port%v", http3Port)
+
 	var tlsConfig *tls.Config
 
 	if useTLS {
@@ -85,25 +88,25 @@ func NewProxy(handler http.Handler) *ProxyServer {
 
 		// 获取当前工作目录
 		wd, _ := os.Getwd()
-		log.Infof("当前工作目录: %s", wd)
-		log.Infof("certFile绝对路径: %s", filepath.Join(wd, certFile))
-		log.Infof("keyFile绝对路径: %s", filepath.Join(wd, keyFile))
+		logger.Infof("当前工作目录: %s", wd)
+		logger.Infof("certFile绝对路径: %s", filepath.Join(wd, certFile))
+		logger.Infof("keyFile绝对路径: %s", filepath.Join(wd, keyFile))
 
 		if certFile == "" || keyFile == "" {
-			log.Fatal("当UseTLS为true时，必须设置certFile和keyFile环境变量")
+			logger.Fatal("当UseTLS为true时，必须设置certFile和keyFile环境变量")
 		}
 
 		// 检查文件存在性
 		if !fileExists(certFile) {
-			log.Fatalf("证书文件不存在: %s", certFile)
+			logger.Fatalf("证书文件不存在: %s", certFile)
 		}
 		if !fileExists(keyFile) {
-			log.Fatalf("私钥文件不存在: %s", keyFile)
+			logger.Fatalf("私钥文件不存在: %s", keyFile)
 		}
 
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			log.Fatalf("证书加载失败: %v (certFile=%s, keyFile=%s)", err, certFile, keyFile)
+			logger.Fatalf("证书加载失败: %v (certFile=%s, keyFile=%s)", err, certFile, keyFile)
 		}
 
 		// TLS配置（兼容HTTP/3）
@@ -178,15 +181,15 @@ func NewProxy(handler http.Handler) *ProxyServer {
 
 // Start the server.
 func (s *ProxyServer) Start(ctx context.Context) error {
-	log.Infof("proxy listening on %s (HTTP/3:%v)", s.Addr, s.useH3)
+	logger.Infof("proxy listening on %s (HTTP/3:%v)", s.Addr, s.useH3)
 
 	// 防火墙检测逻辑
 	if s.useH3 {
-		log.Warnf("请确认防火墙已开放UDP %s 端口（云服务器需配置安全组）", s.http3Port)
+		logger.Warnf("请确认防火墙已开放UDP %s 端口（云服务器需配置安全组）", s.http3Port)
 		if strings.HasPrefix(s.http3Port, ":") {
 			port := strings.TrimPrefix(s.http3Port, ":")
 			if _, err := strconv.Atoi(port); err == nil && port >= "1024" {
-				log.Warnf("HTTP/3端口 %s 高于1024，部分浏览器可能拒绝Alt-Svc声明", port)
+				logger.Warnf("HTTP/3端口 %s 高于1024，部分浏览器可能拒绝Alt-Svc声明", port)
 			}
 		}
 	}
@@ -195,7 +198,7 @@ func (s *ProxyServer) Start(ctx context.Context) error {
 		go func() {
 			defer func() {
 				if err := recover(); err != nil {
-					log.Errorf("HTTP/3服务崩溃: %v", err)
+					logger.Errorf("HTTP/3服务崩溃: %v", err)
 				}
 			}()
 
@@ -204,12 +207,12 @@ func (s *ProxyServer) Start(ctx context.Context) error {
 				// 创建UDP监听器
 				udpAddr, err := net.ResolveUDPAddr("udp", s.http3Port)
 				if err != nil {
-					log.Errorf("解析UDP地址失败: %v", err)
+					logger.Errorf("解析UDP地址失败: %v", err)
 					return
 				}
 				conn, err := net.ListenUDP("udp", udpAddr)
 				if err != nil {
-					log.Errorf("创建UDP监听失败: %v", err)
+					logger.Errorf("创建UDP监听失败: %v", err)
 					return
 				}
 				defer conn.Close()
@@ -223,17 +226,17 @@ func (s *ProxyServer) Start(ctx context.Context) error {
 				// 使用传输层创建早期监听器（EarlyListener）
 				listener, err := transport.ListenEarly(s.h3Server.TLSConfig, s.h3Server.QUICConfig)
 				if err != nil {
-					log.Errorf("创建QUIC早期监听器失败: %v", err)
+					logger.Errorf("创建QUIC早期监听器失败: %v", err)
 					return
 				}
 				defer listener.Close()
 
 				// 使用HTTP/3服务器处理QUIC连接
 				// if err := s.h3Server.ServeListener(listener); err != nil {
-				// 	log.Errorf("HTTP/3 server error: %v", err)
+				// 	logger.Errorf("HTTP/3 server error: %v", err)
 				// }
 				if err := s.h3Server.ServeListener(listener); err != nil {
-					log.Errorf("HTTP/3服务错误(重试 %d/3): %v", retry+1, err)
+					logger.Errorf("HTTP/3服务错误(重试 %d/3): %v", retry+1, err)
 					time.Sleep(time.Second * time.Duration(math.Pow(2, float64(retry))))
 					continue
 				}
@@ -246,7 +249,7 @@ func (s *ProxyServer) Start(ctx context.Context) error {
 		if state == http.StateHijacked {
 			if tlsConn, ok := conn.(*tls.Conn); ok {
 				state := tlsConn.ConnectionState()
-				log.Debugf("协商协议: %s", state.NegotiatedProtocol)
+				logger.Debugf("协商协议: %s", state.NegotiatedProtocol)
 			}
 		}
 	}
@@ -259,7 +262,7 @@ func (s *ProxyServer) Start(ctx context.Context) error {
 
 // Stop the server.
 func (s *ProxyServer) Stop(ctx context.Context) error {
-	log.Info("proxy stopping")
+	logger.Info("proxy stopping")
 	return s.Shutdown(ctx)
 }
 

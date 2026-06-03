@@ -79,7 +79,7 @@ const (
 	ModelFileFileName = "model.conf"
 
 	TlsDirName       = "tls"
-	DefaultHTTPPort  = ":443" // TCP for HTTP/1.1 & HTTP/2
+	DefaultHTTPPort  = ":8080" // TCP for HTTP/1.1 & HTTP/2
 	DefaultHTTP3Port = ":443" // UDP for HTTP/3
 	CrtFileName      = "gateway.crt"
 	KeyFileName      = "gateway.key"

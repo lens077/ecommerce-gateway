@@ -122,10 +122,67 @@ func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, 
 		ws = &watcherStatus{
 			initializedChan: make(chan struct{}),
 		}
+
+		// 创建一个带超时的 context，用于初始化 watcher
+		// 如果服务在 Consul 中不存在或不可达，watcher 初始化会在超时后失败
+		// 这样可以避免网关启动时被某个不可用的后端服务阻塞
+		initCtx, initCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer initCancel()
+
 		// 根据对应的注册中心以及端点，初始化一个监听器
-		watcher, err := discovery.Watch(ctx, endpoint)
+		watcher, err := discovery.Watch(initCtx, endpoint)
 		if err != nil {
-			serviceWatchLog.Errorf("Failed to initialize watcher on endpoint: %s, err: %+v", endpoint, err)
+			serviceWatchLog.Errorf("Failed to initialize watcher on endpoint: %s, err: %+v (will retry in background)", endpoint, err)
+			// 即使 watcher 初始化失败，也关闭 channel 以避免阻塞
+			// 注意：这里不手动解锁，由外层 defer 统一处理
+			close(ws.initializedChan)
+			// 在后台继续尝试建立 watcher，这样服务恢复后可以自动重新发现
+			// 由于 Add 函数即将返回，这里的 goroutine 会在 Add 返回后执行
+			go func() {
+				failureCount := 0
+				maxRetryDelay := 60 * time.Second
+
+				for {
+					failureCount++
+					retryDelay := calculateRetryDelay(failureCount, maxRetryDelay)
+
+					// 使用新的 context 尝试重新建立 watcher
+					retryCtx, retryCancel := context.WithTimeout(context.Background(), retryDelay)
+					watcher, err := discovery.Watch(retryCtx, endpoint)
+					retryCancel()
+					if err != nil {
+						// 控制日志输出频率：只在延迟变化时或失败次数较少时输出日志
+						if failureCount <= 3 || retryDelay != time.Second {
+							serviceWatchLog.Warnf("Retry failed to initialize watcher on endpoint: %s, err: %+v, failure count: %d, will retry after %v",
+								endpoint, err, failureCount, retryDelay)
+						}
+						time.Sleep(retryDelay)
+						continue
+					}
+					serviceWatchLog.Infof("Succeeded to initialize watcher on endpoint: %s after retry", endpoint)
+					s.lock.Lock()
+					ws.watcher = watcher
+					s.watcherStatus[endpoint] = ws
+					s.lock.Unlock()
+
+					// 通知等待的 applier
+					s.lock.Lock()
+					appliers := s.appliers[endpoint]
+					s.lock.Unlock()
+					if len(appliers) > 0 {
+						for id, applier := range appliers {
+							serviceWatchLog.Infof("Notifying applier %s for endpoint: %s after watcher retry", id, endpoint)
+							if services, ok := s.getSelectedCache(endpoint); ok && len(services) > 0 {
+								applier.Callback(services)
+							}
+						}
+					}
+
+					// 启动后台监控
+					go s.watchLoop(endpoint, watcher)
+					return
+				}
+			}()
 			return false
 		}
 		serviceWatchLog.Infof("Succeeded to initialize watcher on endpoint: %s", endpoint)
@@ -148,31 +205,7 @@ func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, 
 		}()
 
 		// 开启协程，轮询监听器中的服务列表
-		go func() {
-			for {
-				services, err := watcher.Next()
-				if err != nil {
-					if errors.Is(err, context.Canceled) {
-						serviceWatchLog.Warnf("The watch process on: %s has been canceled", endpoint)
-						// 清理已取消的监听状态，允许重新创建监听
-						s.lock.Lock()
-						delete(s.watcherStatus, endpoint)
-						s.lock.Unlock()
-						return
-					}
-					serviceWatchLog.Errorf("Failed to watch on endpoint: %s, err: %+v, the watch process will attempt again after 1 second", endpoint, err)
-					time.Sleep(time.Second)
-					continue
-				}
-				if len(services) == 0 {
-					serviceWatchLog.Warnf("Empty services on endpoint: %s, this most likely no available instance in discovery", endpoint)
-					continue
-				}
-				serviceWatchLog.Infof("Received %d services on endpoint: %s, hash: %s", len(services), endpoint, instancesSetHash(services))
-				s.setSelectedCache(endpoint, services)
-				s.doCallback(endpoint, services)
-			}
-		}()
+		go s.watchLoop(endpoint, watcher)
 
 		return false
 	}()
@@ -186,6 +219,66 @@ func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, 
 	}
 
 	return existed
+}
+
+// watchLoop 持续监听服务实例变化，当服务恢复时会自动通过 doCallback 通知所有 applier
+func (s *serviceWatcher) watchLoop(endpoint string, watcher registry.Watcher) {
+	failureCount := 0
+	maxRetryDelay := 60 * time.Second
+
+	for {
+		services, err := watcher.Next()
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				serviceWatchLog.Warnf("The watch process on: %s has been canceled", endpoint)
+				s.lock.Lock()
+				delete(s.watcherStatus, endpoint)
+				s.lock.Unlock()
+				return
+			}
+
+			failureCount++
+			retryDelay := calculateRetryDelay(failureCount, maxRetryDelay)
+
+			if failureCount <= 3 || retryDelay != time.Second {
+				serviceWatchLog.Errorf("Failed to watch on endpoint: %s, err: %+v, failure count: %d, will retry after %v",
+					endpoint, err, failureCount, retryDelay)
+			}
+
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		failureCount = 0
+
+		if len(services) == 0 {
+			serviceWatchLog.Warnf("Empty services on endpoint: %s, this most likely no available instance in discovery", endpoint)
+			continue
+		}
+		serviceWatchLog.Infof("Received %d services on endpoint: %s, hash: %s", len(services), endpoint, instancesSetHash(services))
+		s.setSelectedCache(endpoint, services)
+		s.doCallback(endpoint, services)
+	}
+}
+
+func calculateRetryDelay(failureCount int, maxDelay time.Duration) time.Duration {
+	steps := []time.Duration{
+		1 * time.Second,
+		10 * time.Second,
+		30 * time.Second,
+		60 * time.Second,
+	}
+
+	index := failureCount - 1
+	if index >= len(steps) {
+		return maxDelay
+	}
+
+	delay := steps[index]
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
 }
 
 func (s *serviceWatcher) doCallback(endpoint string, services []*registry.ServiceInstance) {

@@ -211,7 +211,7 @@ version: v1.4.0
 
 envs:
   # 服务发现配置
-  DISCOVERY_DSN: consul://localhost:8500
+  CONSUL_ADDR: consul://localhost:8500
   DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
   # 日志级别
   LOG_LEVEL: debug

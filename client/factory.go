@@ -185,6 +185,7 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 	for _, backend := range na.endpoint.Backends {
 		target, err := parseTarget(backend.Target)
 		if err != nil {
+			// 对于配置错误，返回错误（这是配置问题，不应该容忍）
 			return err
 		}
 		switch target.Scheme {
@@ -198,11 +199,17 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 			node := newNode(nodeAddr, na.endpoint.Protocol, weighted, map[string]string{}, "", "")
 			nodes = append(nodes, node)
 			na.picker.Apply(nodes)
+			log.Infof("Applied direct backend for endpoint %s: %s", na.endpoint.Path, nodeAddr)
 		case "discovery":
 			// 添加监听，该端点在注册中心中的实例列表都会写入到 na 中，且如果监听到服务列表的变化，则会调用na的回调
+			// 注意：即使服务在 Consul 中不存在，AddWatch 也会正常返回
+			// 网关会继续启动，并在服务上线后自动发现
 			existed := AddWatch(ctx, na.registry, target.Endpoint, na)
 			if existed {
 				log.Infof("watch target %+v already existed", target)
+			} else {
+				log.Infof("Started watching discovery target %s for endpoint %s (service may be unavailable initially, gateway will continue starting)", 
+					target.Endpoint, na.endpoint.Path)
 			}
 			
 			// 启动定期刷新机制，确保即使 watcher 不工作，也能获取最新的服务列表
