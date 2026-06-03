@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-kratos/gateway/constants"
 	config "github.com/go-kratos/gateway/api/gateway/config/v1"
 
 	"github.com/go-kratos/kratos/v2/log"
@@ -62,9 +63,9 @@ func WithHealthCheckTimeout(timeout time.Duration) Option {
 func NewFactory(r registry.Discovery, opts ...Option) Factory {
 	o := &options{
 		pickerBuilder:        p2c.NewBuilder(),
-		enableHealthCheck:    true, // 默认启用健康检查
-		healthCheckInterval:  10 * time.Second,
-		healthCheckTimeout:   2 * time.Second,
+		enableHealthCheck:    true,
+		healthCheckInterval:  constants.HealthCheckInterval,
+		healthCheckTimeout:   constants.HealthCheckTimeout,
 		maxHealthCheckRetries: 3,
 	}
 	for _, opt := range opts {
@@ -223,7 +224,7 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 
 // startRefreshLoop 启动定期刷新服务列表的循环
 func (na *nodeApplier) startRefreshLoop(serviceName string) {
-	na.refreshTicker = time.NewTicker(15 * time.Second)
+	na.refreshTicker = time.NewTicker(constants.ClientRefreshInterval)
 	
 	go func() {
 		for {

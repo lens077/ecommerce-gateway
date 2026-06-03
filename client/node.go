@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/kratos/v2/selector"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/http2"
@@ -24,7 +25,7 @@ var (
 	_globalClient                  = defaultClient()
 	_globalH2Client                = defaultH2Client()
 	_globalH2CClient               = defaultH2CClient()
-	_dialTimeout                   = 200 * time.Millisecond
+	_dialTimeout                   = constants.ClientDialTimeout
 	followRedirect                 = false
 )
 
@@ -69,15 +70,15 @@ func defaultClient() *http.Client {
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout:   _dialTimeout,
-				KeepAlive: 30 * time.Second,
+				KeepAlive: constants.ClientKeepAlive,
 			}).DialContext,
 			MaxIdleConns:          10000,
 			MaxIdleConnsPerHost:   1000,
 			MaxConnsPerHost:       1000,
 			DisableCompression:    true,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
+			IdleConnTimeout:       constants.ClientIdleConnTimeout,
+			TLSHandshakeTimeout:   constants.ClientTLSHandshakeTimeout,
+			ExpectContinueTimeout: constants.ClientExpectContinueTimeout,
 		},
 	}
 }
@@ -91,7 +92,7 @@ func defaultH2Client() *http.Client {
 		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
 			dialer := &net.Dialer{
 				Timeout:   _dialTimeout,
-				KeepAlive: 30 * time.Second,
+				KeepAlive: constants.ClientKeepAlive,
 			}
 
 			// 如果 cfg 为 nil，说明是 http:// 请求 (h2c)
@@ -136,7 +137,7 @@ func defaultH2CClient() *http.Client {
 		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
 			dialer := &net.Dialer{
 				Timeout:   _dialTimeout,
-				KeepAlive: 30 * time.Second,
+				KeepAlive: constants.ClientKeepAlive,
 			}
 			return dialer.DialContext(ctx, network, addr)
 		},

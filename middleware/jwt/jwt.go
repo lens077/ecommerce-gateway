@@ -275,7 +275,7 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				return nil, err
 			}
 
-			req.Header.Set(constants.UserIdMetadataKey, claims.User.ID)
+			req.Header.Set(constants.UserIdMetadataKey, claims.User.Id)
 			req.Header.Set(constants.UserNameMetadataKey, claims.User.Name)
 			return next.RoundTrip(req)
 		})

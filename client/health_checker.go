@@ -9,14 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/kratos/v2/selector"
 )
 
 var (
-	// 默认健康检查配置
-	defaultCheckInterval = 10 * time.Second
-	defaultCheckTimeout  = 2 * time.Second
-	defaultMaxFailures   = 3
+	defaultMaxFailures = 3
 )
 
 // HealthChecker 健康检查器接口
@@ -52,17 +50,17 @@ func NewHealthChecker(nodes []selector.Node, opts ...HealthCheckerOption) Health
 		healthyNodes: make(map[string]bool),
 		failureCount: make(map[string]int),
 		nodes:        make(map[string]selector.Node),
-		interval:     defaultCheckInterval,
-		timeout:      defaultCheckTimeout,
+		interval:     constants.HealthCheckInterval,
+		timeout:      constants.HealthCheckTimeout,
 		maxFailures:  defaultMaxFailures,
 		ctx:          ctx,
 		cancel:       cancel,
 		httpClient: &http.Client{
-			Timeout: defaultCheckTimeout,
+			Timeout: constants.HealthCheckTimeout,
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{
-					Timeout:   500 * time.Millisecond,
-					KeepAlive: 30 * time.Second,
+					Timeout:   constants.HealthCheckDialTimeout,
+					KeepAlive: constants.HealthCheckKeepAlive,
 				}).DialContext,
 			},
 		},

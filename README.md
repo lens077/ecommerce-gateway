@@ -4,6 +4,10 @@
 
 HTTP -> Proxy -> Router -> Middleware -> Client -> Selector -> Node
 
+## 推送
+- 推送到 gateway 单独仓库 ： `git subtree push --prefix=gateway gateway main`
+- 同步到主仓库 ： `git push main main`
+
 ## 快速入门
 与后端通信的模式选择:
 - discovery: 服务发现模式,使用consul作为服务注册和发现的中间件, 使用它时必须保证consul可以访问到微服务

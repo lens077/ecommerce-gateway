@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/gateway/proxy/debug"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/registry"
@@ -126,7 +127,7 @@ func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, 
 		// 创建一个带超时的 context，用于初始化 watcher
 		// 如果服务在 Consul 中不存在或不可达，watcher 初始化会在超时后失败
 		// 这样可以避免网关启动时被某个不可用的后端服务阻塞
-		initCtx, initCancel := context.WithTimeout(ctx, 10*time.Second)
+		initCtx, initCancel := context.WithTimeout(ctx, constants.DiscoveryInitTimeout)
 		defer initCancel()
 
 		// 根据对应的注册中心以及端点，初始化一个监听器
@@ -140,7 +141,7 @@ func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, 
 			// 由于 Add 函数即将返回，这里的 goroutine 会在 Add 返回后执行
 			go func() {
 				failureCount := 0
-				maxRetryDelay := 60 * time.Second
+				maxRetryDelay := constants.DiscoveryMaxRetryDelay
 
 				for {
 					failureCount++
@@ -152,7 +153,7 @@ func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, 
 					retryCancel()
 					if err != nil {
 						// 控制日志输出频率：只在延迟变化时或失败次数较少时输出日志
-						if failureCount <= 3 || retryDelay != time.Second {
+						if failureCount <= constants.DiscoveryLogThreshold || retryDelay != time.Second {
 							serviceWatchLog.Warnf("Retry failed to initialize watcher on endpoint: %s, err: %+v, failure count: %d, will retry after %v",
 								endpoint, err, failureCount, retryDelay)
 						}
@@ -224,7 +225,7 @@ func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, 
 // watchLoop 持续监听服务实例变化，当服务恢复时会自动通过 doCallback 通知所有 applier
 func (s *serviceWatcher) watchLoop(endpoint string, watcher registry.Watcher) {
 	failureCount := 0
-	maxRetryDelay := 60 * time.Second
+	maxRetryDelay := constants.DiscoveryMaxRetryDelay
 
 	for {
 		services, err := watcher.Next()
@@ -240,7 +241,7 @@ func (s *serviceWatcher) watchLoop(endpoint string, watcher registry.Watcher) {
 			failureCount++
 			retryDelay := calculateRetryDelay(failureCount, maxRetryDelay)
 
-			if failureCount <= 3 || retryDelay != time.Second {
+			if failureCount <= constants.DiscoveryLogThreshold || retryDelay != time.Second {
 				serviceWatchLog.Errorf("Failed to watch on endpoint: %s, err: %+v, failure count: %d, will retry after %v",
 					endpoint, err, failureCount, retryDelay)
 			}
@@ -262,12 +263,7 @@ func (s *serviceWatcher) watchLoop(endpoint string, watcher registry.Watcher) {
 }
 
 func calculateRetryDelay(failureCount int, maxDelay time.Duration) time.Duration {
-	steps := []time.Duration{
-		1 * time.Second,
-		10 * time.Second,
-		30 * time.Second,
-		60 * time.Second,
-	}
+	steps := constants.DiscoveryRetrySteps
 
 	index := failureCount - 1
 	if index >= len(steps) {
@@ -333,7 +329,7 @@ func (s *serviceWatcher) proccleanup() {
 		}
 	}
 
-	const interval = time.Second * 30
+	interval := constants.DiscoveryCleanupInterval
 	for {
 		serviceWatchLog.Infof("Start to cleanup appliers on all endpoints for every %s", interval.String())
 		time.Sleep(interval)

@@ -52,7 +52,7 @@ func Handler(origin http.Handler) http.Handler {
 
 type User struct {
 	Owner                string // 用户所在的组织
-	ID                   string // 用户 ID
+	Id                   string `json:"id"` // 用户 ID
 	Name                 string // 用户名称
 	DisplayName          string // 用户昵称
 	Email                string // 用户邮箱
