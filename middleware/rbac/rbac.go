@@ -80,10 +80,10 @@ func InitEnforcer() error {
 
 func initPaths() error {
 	if localModelFile == "" {
-		localModelFile = filepath.Join(constants.ConfigDir, constants.RBACDirName, constants.ModelFileFileName)
+		localModelFile = filepath.Join(constants.ConfigDir, constants.PoliciesDirName, constants.ModelFileFileName)
 	}
 	if localPolicyFile == "" {
-		localPolicyFile = filepath.Join(constants.ConfigDir, constants.RBACDirName, constants.PoliciesfileName)
+		localPolicyFile = filepath.Join(constants.ConfigDir, constants.PoliciesDirName, constants.PoliciesfileName)
 	}
 	logger.Debugf("策略文件路径: %s | 模型文件路径: %s", localPolicyFile, localModelFile)
 
@@ -99,7 +99,7 @@ func syncEssentialFiles(load *loader.ConsulFileLoader) error {
 	defer logger.Debugf("文件同步完成")
 
 	if err := load.SyncFile(
-		path.Join(constants.RBACDirName, constants.PoliciesfileName),
+		path.Join(constants.PoliciesDirName, constants.PoliciesfileName),
 		localPolicyFile,
 		validateFileContent,
 	); err != nil {
@@ -107,7 +107,7 @@ func syncEssentialFiles(load *loader.ConsulFileLoader) error {
 	}
 
 	return load.SyncFile(
-		path.Join(constants.RBACDirName, constants.ModelFileFileName),
+		path.Join(constants.PoliciesDirName, constants.ModelFileFileName),
 		localModelFile,
 		validateFileContent,
 	)
@@ -172,8 +172,8 @@ func setupWatchers(load *loader.ConsulFileLoader) {
 		path     string
 		callback func()
 	}{
-		{path.Join(constants.RBACDirName, constants.PoliciesfileName), onPolicyUpdate},
-		{path.Join(constants.RBACDirName, constants.ModelFileFileName), onModelUpdate},
+		{path.Join(constants.PoliciesDirName, constants.PoliciesfileName), onPolicyUpdate},
+		{path.Join(constants.PoliciesDirName, constants.ModelFileFileName), onModelUpdate},
 	}
 
 	for _, w := range watchPaths {
@@ -194,7 +194,7 @@ func onPolicyUpdate() {
 	}
 
 	if err := load.SyncFile(
-		path.Join(constants.RBACDirName, constants.PoliciesfileName),
+		path.Join(constants.PoliciesDirName, constants.PoliciesfileName),
 		localPolicyFile,
 		validateFileContent,
 	); err != nil {
@@ -221,7 +221,7 @@ func onModelUpdate() {
 	}
 
 	if err := load.SyncFile(
-		path.Join(constants.RBACDirName, constants.ModelFileFileName),
+		path.Join(constants.PoliciesDirName, constants.ModelFileFileName),
 		localModelFile,
 		validateFileContent,
 	); err != nil {

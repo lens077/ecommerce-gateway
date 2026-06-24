@@ -16,7 +16,7 @@ api:
 .PHONY: dev
 dev:
 	CASDOOR_URL=http://apikv.com:8000 \
-	CONSUL_ADDR=consul://consul.sumery.com:443 \
+	CONSUL_ADDR=consul://192.168.3.112:8500 \
 	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
 	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
 	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \

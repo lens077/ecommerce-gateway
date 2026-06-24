@@ -30,6 +30,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+var logger = log.NewHelper(log.With(log.DefaultLogger, "module", "proxy/proxy"))
+
 var (
 	_metricRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "go",
@@ -271,7 +273,7 @@ func (p *Proxy) buildMiddleware(ms []*config.Middleware, next http.RoundTripper)
 		m, err := p.middlewareFactory(ms[i])
 		if err != nil {
 			if errors.Is(err, middleware.ErrNotFound) {
-				log.Errorf("Skip does not exist middleware: %s", ms[i].Name)
+				logger.Errorf("Skip does not exist middleware: %s", ms[i].Name)
 				continue
 			}
 			return nil, err
@@ -416,7 +418,7 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 					break
 				}
 				markFailed(req, i, err)
-				log.Errorf("Attempt at [%d/%d], failed to handle request: %s: %+v", i+1, retryStrategy.attempts, req.URL.String(), err)
+				logger.Errorf("Attempt at [%d/%d], failed to handle request: %s: %+v", i+1, retryStrategy.attempts, req.URL.String(), err)
 				continue
 			}
 			if !judgeRetryRequired(retryStrategy.conditions, resp) {
@@ -447,7 +449,7 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 			if err != nil {
 				reqOpts.DoneFunc(ctx, selector.DoneInfo{Err: err})
 				sentBytesAdd(req, labels, sent)
-				log.Errorf("Failed to copy backend response body to client: [%s] %s %s %d %+v\n", e.Protocol, e.Method, e.Path, sent, err)
+				logger.Errorf("Failed to copy backend response body to client: [%s] %s %s %d %+v\n", e.Protocol, e.Method, e.Path, sent, err)
 				return false
 			}
 			sentBytesAdd(req, labels, sent)
@@ -512,19 +514,19 @@ func (p *Proxy) Update(c *config.Gateway) (retError error) {
 		handler, closer, err := p.buildEndpoint(e, c.Middlewares)
 		if err != nil {
 			// 记录失败的后端服务，但继续处理其他 endpoint
-			log.Warnf("Failed to build endpoint [%s] %s %s: %v, this endpoint will be skipped but gateway will continue starting", 
+			logger.Warnf("Failed to build endpoint [%s] %s %s: %v, this endpoint will be skipped but gateway will continue starting",
 				e.Protocol, e.Method, e.Path, err)
 			failedEndpoints = append(failedEndpoints, fmt.Sprintf("%s(%s)", e.Path, e.Protocol))
 			continue
 		}
 		defer closeOnError(closer, &retError)
 		if err = router.Handle(e.Path, e.Method, e.Host, handler, closer); err != nil {
-			log.Warnf("Failed to register route [%s] %s %s: %v, this endpoint will be skipped but gateway will continue starting", 
+			logger.Warnf("Failed to register route [%s] %s %s: %v, this endpoint will be skipped but gateway will continue starting",
 				e.Protocol, e.Method, e.Path, err)
 			failedEndpoints = append(failedEndpoints, fmt.Sprintf("%s(route error)", e.Path))
 			continue
 		}
-		log.Infof("build endpoint: [%s] %s %s", e.Protocol, e.Method, e.Path)
+		logger.Infof("build endpoint: [%s] %s %s", e.Protocol, e.Method, e.Path)
 		successCount++
 	}
 	
@@ -535,10 +537,10 @@ func (p *Proxy) Update(c *config.Gateway) (retError error) {
 	
 	// 记录启动摘要
 	if len(failedEndpoints) > 0 {
-		log.Warnf("Gateway started with %d/%d endpoints available. Failed endpoints: %v", 
+		logger.Warnf("Gateway started with %d/%d endpoints available. Failed endpoints: %v",
 			successCount, len(c.Endpoints), failedEndpoints)
 	} else {
-		log.Infof("Gateway started successfully with all %d endpoints", successCount)
+		logger.Infof("Gateway started successfully with all %d endpoints", successCount)
 	}
 	
 	old := p.router.Swap(router)
@@ -567,7 +569,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			w.WriteHeader(http.StatusBadGateway)
 			buf := make([]byte, 64<<10) //nolint:gomnd
 			n := runtime.Stack(buf, false)
-			log.Errorf("panic recovered: %+v\n%s", err, buf[:n])
+			logger.Errorf("panic recovered: %+v\n%s", err, buf[:n])
 			fmt.Fprintf(os.Stderr, "panic recovered: %+v\n%s\n", err, buf[:n])
 		}
 	}()

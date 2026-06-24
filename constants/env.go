@@ -73,14 +73,14 @@ const (
 	UserRoleMetadataKey  = "x-md-global-role"
 	UserIdMetadataKey    = "x-md-global-user-id"
 
-	// RBACDirName 基于角色的访问控制
-	RBACDirName       = "rbac"
+	// PoliciesDirName 权限策略目录
+	PoliciesDirName   = "policies"
 	PoliciesfileName  = "policies.csv"
 	ModelFileFileName = "model.conf"
 
 	TlsDirName       = "tls"
 	DefaultHTTPPort  = ":8080" // TCP for HTTP/1.1 & HTTP/2
-	DefaultHTTP3Port = ":443" // UDP for HTTP/3
+	DefaultHTTP3Port = ":443"  // UDP for HTTP/3
 	CrtFileName      = "gateway.crt"
 	KeyFileName      = "gateway.key"
 )

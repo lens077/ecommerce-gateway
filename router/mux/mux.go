@@ -16,6 +16,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+var logger = log.NewHelper(log.With(log.DefaultLogger, "module", "router/mux"))
+
 var EnableStrictSlash = parseBool(os.Getenv("ENABLE_STRICT_SLASH"), false)
 
 func parseBool(in string, defV bool) bool {
@@ -112,11 +114,11 @@ func (r *muxRouter) Handle(pattern, method, host string, handler http.Handler, c
 
 func (r *muxRouter) SyncClose(ctx context.Context) error {
 	if timeout := waitTimeout(ctx, r.wg); timeout {
-		log.Warnf("Time out to wait all requests complete, processing force close")
+		logger.Warnf("Time out to wait all requests complete, processing force close")
 	}
 	for _, closer := range r.allCloser {
 		if err := closer.Close(); err != nil {
-			log.Errorf("Failed to execute close function: %+v", err)
+			logger.Errorf("Failed to execute close function: %+v", err)
 			continue
 		}
 	}

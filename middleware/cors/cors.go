@@ -2,7 +2,6 @@ package cors
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -52,8 +51,6 @@ const (
 
 func init() {
 	middleware.Register("cors", Middleware)
-	// 注册CORS中间件
-	fmt.Println("CORS中间件 初始化")
 }
 
 func isOriginAllowed(origin string, allowOriginHosts []string) bool {

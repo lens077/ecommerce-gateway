@@ -59,7 +59,6 @@ var (
 func init() {
 	prometheus.MustRegister(requestsTotal, requestDuration)
 	middleware.Register("router_filter", Middleware)
-	fmt.Println("RouterFilter middleware initialized")
 }
 
 type Matcher interface {

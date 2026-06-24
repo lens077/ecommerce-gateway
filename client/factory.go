@@ -14,7 +14,6 @@ import (
 	"github.com/go-kratos/gateway/constants"
 	config "github.com/go-kratos/gateway/api/gateway/config/v1"
 
-	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/registry"
 	"github.com/go-kratos/kratos/v2/selector"
 	"github.com/go-kratos/kratos/v2/selector/p2c"
@@ -86,7 +85,7 @@ func NewFactory(r registry.Discovery, opts ...Option) Factory {
 				WithMaxFailures(o.maxHealthCheckRetries),
 			)
 			healthChecker.Start()
-			log.Infof("Health checker enabled for endpoint: %s", endpoint.Path)
+			LOG.Infof("Health checker enabled for endpoint: %s", endpoint.Path)
 		}
 
 		applier := &nodeApplier{
@@ -200,16 +199,16 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 			node := newNode(nodeAddr, na.endpoint.Protocol, weighted, map[string]string{}, "", "")
 			nodes = append(nodes, node)
 			na.picker.Apply(nodes)
-			log.Infof("Applied direct backend for endpoint %s: %s", na.endpoint.Path, nodeAddr)
+			LOG.Infof("Applied direct backend for endpoint %s: %s", na.endpoint.Path, nodeAddr)
 		case "discovery":
 			// 添加监听，该端点在注册中心中的实例列表都会写入到 na 中，且如果监听到服务列表的变化，则会调用na的回调
 			// 注意：即使服务在 Consul 中不存在，AddWatch 也会正常返回
 			// 网关会继续启动，并在服务上线后自动发现
 			existed := AddWatch(ctx, na.registry, target.Endpoint, na)
 			if existed {
-				log.Infof("watch target %+v already existed", target)
+				LOG.Infof("watch target %+v already existed", target)
 			} else {
-				log.Infof("Started watching discovery target %s for endpoint %s (service may be unavailable initially, gateway will continue starting)", 
+				LOG.Infof("Started watching discovery target %s for endpoint %s (service may be unavailable initially, gateway will continue starting)",
 					target.Endpoint, na.endpoint.Path)
 			}
 			
@@ -236,15 +235,15 @@ func (na *nodeApplier) startRefreshLoop(serviceName string) {
 				// 主动从 Consul 获取最新的服务列表
 				services, err := na.registry.GetService(na.ctx, serviceName)
 				if err != nil {
-					log.Warnf("Failed to refresh service list for %s: %v", serviceName, err)
+					LOG.Warnf("Failed to refresh service list for %s: %v", serviceName, err)
 					continue
 				}
 				if len(services) == 0 {
-					log.Warnf("Empty service list for %s during refresh", serviceName)
+					LOG.Warnf("Empty service list for %s during refresh", serviceName)
 					continue
 				}
-				
-				log.Infof("Refreshed service list for %s, got %d instances", serviceName, len(services))
+
+				LOG.Infof("Refreshed service list for %s, got %d instances", serviceName, len(services))
 				// 更新服务列表
 				na.Callback(services)
 			}
@@ -285,13 +284,13 @@ func (na *nodeApplier) Callback(services []*registry.ServiceInstance) error {
 				if port > 0 {
 					// 使用本地地址或从http地址中提取的IP和端口
 					addr = extractAddressFromEndpoints(ser.Endpoints, port)
-					log.Infof("Using extracted endpoint address: %s for service: %s (scheme: %s)", addr, ser.Name, scheme)
+					LOG.Infof("Using extracted endpoint address: %s for service: %s (scheme: %s)", addr, ser.Name, scheme)
 				} else {
-					log.Errorf("failed to parse endpoint: %v/%s: %v, and no port available", ser.Endpoints, scheme, err)
+					LOG.Errorf("failed to parse endpoint: %v/%s: %v, and no port available", ser.Endpoints, scheme, err)
 					continue
 				}
 			} else {
-				log.Errorf("failed to parse endpoint: %v/%s: %v", ser.Endpoints, scheme, err)
+				LOG.Errorf("failed to parse endpoint: %v/%s: %v", ser.Endpoints, scheme, err)
 				continue
 			}
 		}
@@ -305,7 +304,7 @@ func (na *nodeApplier) Callback(services []*registry.ServiceInstance) error {
 	// 更新健康检查器的节点列表（如果启用了健康检查）
 	if na.healthChecker != nil {
 		na.healthChecker.updateNodes(nodes)
-		log.Infof("Updated health checker nodes for endpoint: %s, count: %d", na.endpoint.Path, len(nodes))
+		LOG.Infof("Updated health checker nodes for endpoint: %s, count: %d", na.endpoint.Path, len(nodes))
 	}
 
 	return nil
@@ -354,7 +353,7 @@ func extractAddressFromEndpoints(endpoints []string, port int) string {
 }
 
 func (na *nodeApplier) Cancel() {
-	log.Infof("Closing node applier for endpoint: %+v", na.endpoint)
+	LOG.Infof("Closing node applier for endpoint: %+v", na.endpoint)
 	atomic.StoreInt64(&na.canceled, 1)
 	na.cancel()
 }

@@ -204,7 +204,7 @@ func (l *ConsulFileLoader) Watch(consulKey string, callback func()) error {
 	go func() {
 		for {
 			if err := watcher.RunWithClientAndHclog(l.Client, nil); err != nil {
-				log.Errorf("监听错误: %v (5秒后重试)", err)
+				l.logger.Errorf("监听错误: %v (5秒后重试)", err)
 				time.Sleep(5 * time.Second)
 			}
 		}
@@ -215,19 +215,20 @@ func (l *ConsulFileLoader) Watch(consulKey string, callback func()) error {
 
 // DownloadEssentialFiles 启动时下载Consul 远端文件到本地
 func DownloadEssentialFiles() {
-	// 创建TLS, RBAC策略, 密钥目录
+	// 创建带 module 的 logger
+	logger := log.NewHelper(log.With(log.DefaultLogger, "module", "loader/consul"))
+
+	// 创建TLS, JWT密钥, 策略文件目录
 	requiredDirs := []string{
-		filepath.Join(constants.ConfigDir, constants.TlsDirName),     // 创建TLS目录
-		filepath.Join(constants.ConfigDir, constants.SecretsDirName), // 创建密钥目录
-		filepath.Join(constants.ConfigDir, constants.RBACDirName),    // 创建RBAC目录
+		filepath.Join(constants.ConfigDir, constants.TlsDirName),      // 创建TLS目录
+		filepath.Join(constants.ConfigDir, constants.SecretsDirName),  // 创建密钥目录
+		filepath.Join(constants.ConfigDir, constants.PoliciesDirName), // 创建策略目录
 	}
 	for _, dir := range requiredDirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Fatalf("创建目录失败 %s: %v", dir, err)
 		}
-		log.Infof("已创建 %s 目录",
-			filepath.Join(constants.ConfigDir, dir),
-		)
+		logger.Debugf("创建目录: %s", dir)
 	}
 
 	// 获取环境变量并去除consul://前缀
@@ -247,16 +248,16 @@ func DownloadEssentialFiles() {
 		fmt.Sprintf("%s/%s", constants.TlsDirName, constants.KeyFileName): filepath.Join(constants.ConfigDir, constants.TlsDirName, constants.KeyFileName),
 		// JWT 公钥
 		fmt.Sprintf("%s/%s", constants.SecretsDirName, constants.JwtPublicFileName): filepath.Join(constants.ConfigDir, constants.SecretsDirName, constants.JwtPublicFileName),
-		// RBAC 文件
-		fmt.Sprintf("%s/%s", constants.RBACDirName, constants.PoliciesfileName):  filepath.Join(constants.ConfigDir, constants.RBACDirName, constants.PoliciesfileName),
-		fmt.Sprintf("%s/%s", constants.RBACDirName, constants.ModelFileFileName): filepath.Join(constants.ConfigDir, constants.RBACDirName, constants.ModelFileFileName),
+		// 策略文件
+		fmt.Sprintf("%s/%s", constants.PoliciesDirName, constants.PoliciesfileName):  filepath.Join(constants.ConfigDir, constants.PoliciesDirName, constants.PoliciesfileName),
+		fmt.Sprintf("%s/%s", constants.PoliciesDirName, constants.ModelFileFileName): filepath.Join(constants.ConfigDir, constants.PoliciesDirName, constants.ModelFileFileName),
 	}
 
 	for src, dst := range requiredFiles {
 		if err := fileLoader.DownloadFile(src, dst); err != nil {
 			log.Fatalf("文件下载失败 [%s -> %s]: %v", src, dst, err)
 		}
-		log.Infof("成功下载文件: %s -> %s", src, dst)
+		logger.Debugf("成功下载文件: %s -> %s", src, dst)
 	}
 }
 

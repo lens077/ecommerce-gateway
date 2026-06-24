@@ -15,6 +15,10 @@ const (
 	_debugPrefix = "/debug"
 )
 
+var (
+	logger = log.NewHelper(log.With(log.DefaultLogger, "module", "proxy/debug"))
+)
+
 var globalService = &debugService{
 	handlers: map[string]http.HandlerFunc{
 		"/debug/ping":               func(rw http.ResponseWriter, r *http.Request) {},
@@ -70,5 +74,5 @@ func (d *debugService) Register(name string, debuggable Debuggable) {
 	path := path.Join(_debugPrefix, name)
 	// 使用 gorilla mux 进行分组，并注册路由 /debug/config /debug/proxy /debug/watcher
 	d.mux.PathPrefix(path).Handler(debuggable.DebugHandler())
-	log.Infof("register debug: %s", path)
+	logger.Debugf("register debug: %s", path)
 }

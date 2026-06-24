@@ -20,9 +20,11 @@ const (
 	XForwardedFor = "X-Forwarded-For"
 )
 
+var logger = log.NewHelper(log.With(log.DefaultLogger, "module", "middleware/ip"))
+
 func Init() {
 	middleware.Register("ip", Middleware)
-	log.Info("[IP] 中间件初始化完成")
+	logger.Info("[IP] 中间件初始化完成")
 }
 
 // Middleware 创建一个收集客户端IP的中间件
@@ -34,9 +36,9 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 
 			// 记录是否成功收集到客户端IP
 			if clientIP == "" {
-				log.Warnf("[IP] 未能从请求中收集到客户端IP, URL: %s", req.URL.Path)
+				logger.Warnf("[IP] 未能从请求中收集到客户端IP, URL: %s", req.URL.Path)
 			} else {
-				log.Infof("[IP] 成功收集到客户端IP: %s, URL: %s", clientIP, req.URL.Path)
+				logger.Debugf("[IP] 成功收集到客户端IP: %s, URL: %s", clientIP, req.URL.Path)
 			}
 
 			// 将客户端IP添加到请求头中
