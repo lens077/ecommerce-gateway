@@ -61,21 +61,22 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 	tracer := otel.Tracer(defaultTracerName)
 	return func(next http.RoundTripper) http.RoundTripper {
 		return middleware.RoundTripperFunc(func(req *http.Request) (reply *http.Response, err error) {
+			carrier := propagation.HeaderCarrier(req.Header)
+			ctx := otel.GetTextMapPropagator().Extract(req.Context(), carrier)
+
 			ctx, span := tracer.Start(
-				req.Context(),
+				ctx,
 				fmt.Sprintf("%s %s", req.Method, req.URL.Path),
 				trace.WithSpanKind(trace.SpanKindClient),
 			)
 
-			// attributes for each request
 			span.SetAttributes(
 				semconv.HTTPMethodKey.String(req.Method),
 				semconv.HTTPTargetKey.String(req.URL.Path),
 				semconv.NetPeerIPKey.String(req.RemoteAddr),
 			)
 
-			car := propagation.HeaderCarrier(req.Header)
-			otel.GetTextMapPropagator().Inject(ctx, car)
+			otel.GetTextMapPropagator().Inject(ctx, carrier)
 
 			defer func() {
 				if err != nil {

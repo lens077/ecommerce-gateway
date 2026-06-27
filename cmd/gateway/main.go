@@ -20,6 +20,7 @@ import (
 	"github.com/go-kratos/gateway/pkg/loader"
 	"github.com/go-kratos/gateway/proxy/auth"
 	"github.com/go-kratos/kratos/v2/log"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/exp/rand"
 
 	"github.com/go-kratos/gateway/proxy"
@@ -169,6 +170,9 @@ func main() {
 	}
 
 	serverHandler = auth.Handler(serverHandler)
+
+	// 添加 OTel HTTP 入口中间件，创建 Server Span
+	serverHandler = otelhttp.NewHandler(serverHandler, "gateway")
 
 	// 刷新日志缓冲区
 	logger.Info("准备启动 Kratos 应用...")

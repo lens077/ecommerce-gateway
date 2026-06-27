@@ -23,6 +23,9 @@ import (
 	"github.com/go-kratos/gateway/middleware/routerfilter"
 	"github.com/go-kratos/gateway/pkg/loader"
 	"github.com/go-kratos/kratos/v2/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -306,8 +309,14 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 		}
 		matchers = append(matchers, matcher)
 	}
+
+	tracer := otel.Tracer("middleware/rbac")
+
 	return func(next http.RoundTripper) http.RoundTripper {
 		return middleware.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			ctx, span := tracer.Start(req.Context(), "middleware.rbac", trace.WithSpanKind(trace.SpanKindInternal))
+			defer span.End()
+
 			logger.Debugf("[RBAC] Processing request: %s %s", req.Method, req.URL.Path)
 
 			// 使用PathMatcher 进行路径匹配
@@ -321,18 +330,21 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 			}
 
 			if skipAuth {
-				return next.RoundTrip(req)
+				span.SetStatus(codes.Ok, "skipped")
+				return next.RoundTrip(req.WithContext(ctx))
 			}
 
 			userID := req.Header.Get(constants.UserIdMetadataKey)
 			if userID == "" {
 				logger.Warn("[RBAC] 无法获取用户ID")
+				span.SetStatus(codes.Error, "missing user id")
 				return nil, errors.ErrPermissionDenied
 			}
 
 			role, err := getUserRoles(userID)
 			if err != nil {
 				logger.Errorf("[RBAC] 无法获取用户角色: %v", err)
+				span.SetStatus(codes.Error, err.Error())
 				return nil, errors.ErrAuthCheckFailed
 			}
 
@@ -341,7 +353,7 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 			allowed, syncedErr := syncedCachedEnforcer.Enforce(role, req.URL.Path, req.Method)
 			if syncedErr != nil {
 				logger.Errorf("[RBAC] 无法校验该用户的权限: %v", syncedErr)
-
+				span.SetStatus(codes.Error, syncedErr.Error())
 				return nil, errors.ErrAuthCheckFailed
 			}
 
@@ -349,9 +361,11 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				req.Header.Set(constants.UserRoleMetadataKey, role)
 				req.Header.Set(constants.UserOwnerMetadataKey, userOwner)
 				req.Header.Set(constants.UserIdMetadataKey, userID)
-				return next.RoundTrip(req)
+				span.SetStatus(codes.Ok, "allowed")
+				return next.RoundTrip(req.WithContext(ctx))
 			}
 			logger.Warnf("[RBAC] %v: 用户所属角色:%v 路由:%s 路径:%s", errors.ErrForbiddenRouteMsg, role, req.Method, req.URL.Path)
+			span.SetStatus(codes.Error, "forbidden")
 
 			return nil, errors.ErrForbiddenRoute
 		})

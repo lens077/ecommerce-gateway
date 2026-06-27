@@ -24,6 +24,9 @@ import (
 	kratoserrors "github.com/go-kratos/kratos/v2/errors"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -247,8 +250,13 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 		}
 	}
 
+	tracer := otel.Tracer("middleware/jwt")
+
 	return func(next http.RoundTripper) http.RoundTripper {
 		return middleware.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			ctx, span := tracer.Start(req.Context(), "middleware.jwt", trace.WithSpanKind(trace.SpanKindInternal))
+			defer span.End()
+
 			// 记录请求路径用于调试
 			logger.Infof("[JWT] 处理请求: %s %s", req.Method, req.URL.Path)
 
@@ -259,25 +267,29 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				logger.Infof("[JWT] 规则 %d 匹配结果: %t, 原始模式: %s, 请求路径: %s, 请求方法: %s", i, ok, matcher.RawPattern(), req.URL.Path, req.Method)
 				if ok {
 					logger.Infof("[JWT] 请求匹配跳过规则，不需要JWT验证: %s %s", req.Method, req.URL.Path)
-					return next.RoundTrip(req)
+					span.SetStatus(codes.Ok, "skipped")
+					return next.RoundTrip(req.WithContext(ctx))
 				}
 			}
 
 			authHeader := req.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {
 				logger.Warn("[JWT] 缺少Bearer token")
+				span.SetStatus(codes.Error, "missing token")
 				return nil, kratoserrors.New(401, "MISSING_AUTH_TOKEN", "缺少Bearer token")
 			}
 
 			claims, err := ParseJwt(strings.TrimPrefix(authHeader, "Bearer "))
 			if err != nil {
 				logger.Errorf("[JWT] 令牌验证失败: %v", err)
+				span.SetStatus(codes.Error, err.Error())
 				return nil, err
 			}
 
 			req.Header.Set(constants.UserIdMetadataKey, claims.User.Id)
 			req.Header.Set(constants.UserNameMetadataKey, claims.User.Name)
-			return next.RoundTrip(req)
+			span.SetStatus(codes.Ok, "authenticated")
+			return next.RoundTrip(req.WithContext(ctx))
 		})
 	}, nil
 }
