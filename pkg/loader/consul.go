@@ -216,7 +216,7 @@ func (l *ConsulFileLoader) Watch(consulKey string, callback func()) error {
 // DownloadEssentialFiles 启动时下载Consul 远端文件到本地
 func DownloadEssentialFiles() {
 	// 创建带 module 的 logger
-	logger := log.NewHelper(log.With(log.DefaultLogger, "module", "loader/consul"))
+	// logger := log.NewHelper(log.With(log.DefaultLogger, "module", "loader/consul"))
 
 	// 创建TLS, JWT密钥, 策略文件目录
 	requiredDirs := []string{
@@ -228,7 +228,7 @@ func DownloadEssentialFiles() {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Fatalf("创建目录失败 %s: %v", dir, err)
 		}
-		logger.Debugf("创建目录: %s", dir)
+		// logger.Debugf("创建目录: %s", dir)
 	}
 
 	// 获取环境变量并去除consul://前缀
@@ -257,13 +257,13 @@ func DownloadEssentialFiles() {
 		if err := fileLoader.DownloadFile(src, dst); err != nil {
 			log.Fatalf("文件下载失败 [%s -> %s]: %v", src, dst, err)
 		}
-		logger.Debugf("成功下载文件: %s -> %s", src, dst)
+		// logger.Debugf("成功下载文件: %s -> %s", src, dst)
 	}
 }
 
 func (l *ConsulFileLoader) DownloadFile(consulPath, localPath string) error {
 	fullPath := path.Join(l.Prefix, consulPath)
-	l.logger.Debugf("正在下载文件: consul://%s => %s", fullPath, localPath)
+	// l.logger.Debugf("正在下载文件: consul://%s => %s", fullPath, localPath)
 
 	kv, _, err := l.Client.KV().Get(fullPath, nil)
 	if err != nil {

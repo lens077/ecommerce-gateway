@@ -9,6 +9,6 @@ import (
 // Router is a gateway router.
 type Router interface {
 	http.Handler
-	Handle(pattern, method, host string, handler http.Handler, closer io.Closer) error
+	Handle(pattern, method, host, protocol string, handler http.Handler, closer io.Closer) error
 	SyncClose(ctx context.Context) error
 }

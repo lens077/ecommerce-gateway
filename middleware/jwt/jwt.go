@@ -246,7 +246,7 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 			}
 			matchers = append(matchers, matcher)
 			// 记录创建的匹配器规则
-			logger.Infof("[JWT] 创建匹配器规则: %s, 方法: %v", rule.Path, rule.Methods)
+			// logger.Infof("[JWT] 创建匹配器规则: %s, 方法: %v", rule.Path, rule.Methods)
 		}
 	}
 

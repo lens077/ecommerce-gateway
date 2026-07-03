@@ -347,6 +347,7 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				span.SetStatus(codes.Error, err.Error())
 				return nil, errors.ErrAuthCheckFailed
 			}
+			logger.Debugf("[RBAC]: 用户 %v 所属角色:%v 请求方法:%s 请求路径:%s", userID, role, req.Method, req.URL.Path)
 
 			enforcerMutex.RLock()
 			defer enforcerMutex.RUnlock()

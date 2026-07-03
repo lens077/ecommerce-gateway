@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,18 +89,28 @@ func (r *muxRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // Handle 注册路由
-func (r *muxRouter) Handle(pattern, method, host string, handler http.Handler, closer io.Closer) error {
+func (r *muxRouter) Handle(pattern, method, host, protocol string, handler http.Handler, closer io.Closer) error {
+	
 	next := r.Router.NewRoute().Handler(handler)
 	if host != "" {
 		next = next.Host(host)
 	}
 	if strings.HasSuffix(pattern, "*") {
-		// /api/echo/*
-		next = next.PathPrefix(strings.TrimRight(pattern, "*"))
+		prefix := strings.TrimRight(pattern, "*")
+		if strings.EqualFold(protocol, "GRPC") {
+			serviceName := strings.TrimPrefix(prefix, "/")
+			if serviceName != "" {
+				re := regexp.MustCompile("^/" + regexp.QuoteMeta(serviceName) + "(\\.|/)")
+				next = next.MatcherFunc(func(req *http.Request, match *mux.RouteMatch) bool {
+					return re.MatchString(req.URL.Path)
+				})
+			} else {
+				next = next.PathPrefix(prefix)
+			}
+		} else {
+			next = next.PathPrefix(prefix)
+		}
 	} else {
-		// /api/echo/hello
-		// /api/echo/[a-z]+
-		// /api/echo/{name}
 		next = next.Path(pattern)
 	}
 	if method != "" && method != "*" {

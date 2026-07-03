@@ -78,7 +78,7 @@ func main() {
 		if err := os.Setenv(k, v); err != nil {
 			logger.Warnf("设置环境变量失败 %s: %v", k, err)
 		}
-		logger.Infof("设置环境变量: %s: %v", k, v)
+		// logger.Infof("设置环境变量: %s: %v", k, v)
 	}
 
 	// 5. 初始化中间件

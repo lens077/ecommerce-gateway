@@ -331,7 +331,7 @@ func (s *serviceWatcher) proccleanup() {
 
 	interval := constants.DiscoveryCleanupInterval
 	for {
-		serviceWatchLog.Infof("Start to cleanup appliers on all endpoints for every %s", interval.String())
+		// serviceWatchLog.Infof("Start to cleanup appliers on all endpoints for every %s", interval.String())
 		time.Sleep(interval)
 		doCleanup()
 	}

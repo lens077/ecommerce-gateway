@@ -344,13 +344,6 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 		}
 	}
 
-	// 处理 gRPC 路径，自动去掉匹配的前缀
-	// 例如：path: /user*，请求路径 /user/v1.UserService/UserProfile -> /v1.UserService/UserProfile
-	stripPrefix := ""
-	if e.Protocol == config.Protocol_GRPC && strings.HasSuffix(e.Path, "*") {
-		stripPrefix = strings.TrimSuffix(e.Path, "*")
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// 在请求处理开始时保存原始路径
 		ctx := context.WithValue(req.Context(), middleware.RequestPathKey, req.URL.Path)
@@ -408,11 +401,6 @@ func (p *Proxy) buildEndpoint(e *config.Endpoint, ms []*config.Middleware) (_ ht
 			reqClone := req.Clone(tryCtx)
 
 			resp, err = tripper.RoundTrip(reqClone)
-			// 如果是 gRPC 请求且需要去除前缀，在中间件处理后手动修改响应
-			if err == nil && stripPrefix != "" && strings.HasPrefix(reqClone.URL.Path, stripPrefix) {
-				// 这个修改不会影响中间件的处理结果，只是为了记录日志
-				// 实际的路径修改应该在客户端RoundTripper中处理
-			}
 			if err != nil {
 				if errors.Is(err, jwt.NotAuthN) || errors.Is(err, errorsConst.ErrPermissionDenied) {
 					break
@@ -509,7 +497,7 @@ func (p *Proxy) Update(c *config.Gateway) (retError error) {
 	router := mux.NewRouter(http.HandlerFunc(notFoundHandler), http.HandlerFunc(methodNotAllowedHandler))
 	failedEndpoints := []string{}
 	successCount := 0
-	
+
 	for _, e := range c.Endpoints {
 		handler, closer, err := p.buildEndpoint(e, c.Middlewares)
 		if err != nil {
@@ -520,7 +508,7 @@ func (p *Proxy) Update(c *config.Gateway) (retError error) {
 			continue
 		}
 		defer closeOnError(closer, &retError)
-		if err = router.Handle(e.Path, e.Method, e.Host, handler, closer); err != nil {
+		if err = router.Handle(e.Path, e.Method, e.Host, e.Protocol.String(), handler, closer); err != nil {
 			logger.Warnf("Failed to register route [%s] %s %s: %v, this endpoint will be skipped but gateway will continue starting",
 				e.Protocol, e.Method, e.Path, err)
 			failedEndpoints = append(failedEndpoints, fmt.Sprintf("%s(route error)", e.Path))
@@ -529,12 +517,12 @@ func (p *Proxy) Update(c *config.Gateway) (retError error) {
 		logger.Infof("build endpoint: [%s] %s %s", e.Protocol, e.Method, e.Path)
 		successCount++
 	}
-	
+
 	// 如果所有 endpoint 都失败，返回错误
 	if successCount == 0 && len(c.Endpoints) > 0 {
 		return fmt.Errorf("all %d endpoints failed to build, last error: %v", len(c.Endpoints), retError)
 	}
-	
+
 	// 记录启动摘要
 	if len(failedEndpoints) > 0 {
 		logger.Warnf("Gateway started with %d/%d endpoints available. Failed endpoints: %v",
@@ -542,7 +530,7 @@ func (p *Proxy) Update(c *config.Gateway) (retError error) {
 	} else {
 		logger.Infof("Gateway started successfully with all %d endpoints", successCount)
 	}
-	
+
 	old := p.router.Swap(router)
 	tryCloseRouter(old)
 	return nil
