@@ -1,6 +1,8 @@
 API_PROTO_FILES=$(shell find api -name *.proto)
 REPOSITORY ?= ccr.ccs.tencentyun.com/sumery/ecommerce-gateway
-GOIMAGE ?= golang:1.24.0-alpine3.21
+# 传给 Dockerfile 的 ARG 名是 GO_IMAGE(下划线),别写成 GOIMAGE —— 那样是空传,
+# 实际用的是 Dockerfile 的默认值。这里的值必须 >= go.mod 要求的 go 版本。
+GOIMAGE ?= golang:1.25.1-alpine3.22
 VERSION ?= latest
 GATEWAY_PORT ?= 8080
 PLATFORM_1 ?= linux/amd64
@@ -44,7 +46,7 @@ build:
       --progress=plain \
       -t $(REPOSITORY):$(VERSION) \
       --build-arg CGOENABLED=0 \
-      --build-arg GOIMAGE=$(GOIMAGE) \
+      --build-arg GO_IMAGE=$(GOIMAGE) \
       --build-arg VERSION=$(VERSION) \
       --build-arg GATEWAY_PORT=$(GATEWAY_PORT) \
       --platform $(PLATFORM_1),$(PLATFORM_2) \
