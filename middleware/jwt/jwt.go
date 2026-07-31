@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-kratos/gateway/middleware/routerfilter"
 
@@ -211,7 +212,11 @@ func ParseJwt(tokenString string) (*CustomClaims, error) {
 			return nil, kratoserrors.New(400, "INVALID_SIGNING_METHOD", "不支持的签名方法")
 		}
 		return publicKey, nil
-	})
+	},
+		// 容忍网关与 Casdoor 之间的时钟偏移：否则刚签发的令牌（nbf/iat≈now）
+		// 在前端登录后毫秒级请求时会被判定为 "token is not valid yet" 而 401，导致登录死循环。
+		jwt.WithLeeway(60*time.Second),
+	)
 
 	// 首先检查是否是令牌过期错误
 	if goErrors.Is(err, jwt.ErrTokenExpired) {
