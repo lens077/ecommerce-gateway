@@ -26,7 +26,6 @@ import (
 	"github.com/go-kratos/kratos/v2/errors"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/selector"
-	"github.com/go-kratos/kratos/v2/transport/http/status"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -91,138 +90,40 @@ func setXFFHeader(req *http.Request) {
 	}
 }
 
-type ApiError struct {
-	Code     int               `json:"code"`
-	Reason   string            `json:"reason"`
-	Message  string            `json:"message"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-}
-
-var errorCodeMapping = map[int]int{
-	504: 1002,
-	401: 2001,
-	499: 1001,
-	498: 2003, // 新增过期错误码
-	403: 2002,
-	502: 3001,
-}
-
+// writeError 输出统一的 Connect 规范错误体，并补上打点。
+// 具体的分类、码映射、文案兜底都在 errors 包里，这里只负责补充路由维度的元数据。
 func writeError(w http.ResponseWriter, r *http.Request, err error, labels middleware.MetricsLabels) {
-	var statusCode int
-	var errorMessage string
-	var errorReason string
-	var metadata map[string]string
-
-	// 提取 Kratos 错误信息
-	kratosErr := errors.FromError(err)
-	if kratosErr != nil {
-		statusCode = int(kratosErr.Code)
-		errorMessage = kratosErr.Message
-		errorReason = kratosErr.Reason
-		metadata = kratosErr.Metadata
-	} else {
-		switch {
-		case errors.Is(err, context.Canceled), err.Error() == "client disconnected":
-			statusCode = 499
-		case errors.Is(err, context.DeadlineExceeded):
-			statusCode = 504
-		case errors.Is(err, jwt.NotAuthN) || strings.Contains(err.Error(), "令牌已过期"):
-			statusCode = http.StatusUnauthorized
-		default:
-			statusCode = http.StatusInternalServerError
-		}
-		errorMessage = err.Error()
-		errorReason = "UNKNOWN_ERROR"
+	opts := []errorsConst.WriteOption{}
+	if labels != nil {
+		opts = append(opts,
+			errorsConst.WithMetadata(map[string]string{
+				"service": labels.Service(),
+				"path":    labels.Path(),
+			}),
+			errorsConst.WithGRPC(labels.Protocol() == config.Protocol_GRPC.String()),
+		)
 	}
 
-	// 构造 Connect 协议兼容的错误结构
-	// Connect 协议要求 code 是字符串（如 "permission_denied"）
-	// 我们将 Kratos 的 Reason 映射给 Connect 的 Code，实现业务语义化
-	connectErr := map[string]interface{}{
-		"code":    strings.ToLower(errorReason), // Connect 标准格式通常为小写下划线
-		"message": errorMessage,
-		"details": []interface{}{
-			map[string]interface{}{
-				"@type":    "type.googleapis.com/google.rpc.ErrorInfo",
-				"reason":   errorReason, // 原始 Kratos Reason
-				"metadata": metadata,    // 原始 Kratos Metadata
-			},
-		},
-	}
-
-	// 处理指标
+	statusCode := errorsConst.Write(w, r, err, opts...)
 	requestsTotalIncr(r, labels, statusCode)
-
-	// 统一返回 JSON
-	// 无论是什么协议请求，只要是 Web 调用的网关，返回可读 JSON 才是调试友好的
-	// w.Header().Set("Content-Type", "application/connect+json; charset=utf-8")
-	w.Header().Set("Content-Type", "application/connect+json; charset=utf-8")
-
-	// 添加CORS响应头
-	origin := r.Header.Get("Origin")
-	if origin != "" {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Length, Content-Type, Authorization, Connect-Protocol-Version, Connect-Accept-Encoding, Connect-Timeout-Ms, Connect-Codec-Compress-Bin")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Max-Age", "600")
-	}
-
-	// 如果是 gRPC/Connect 协议流，按协议规范填充 Header
-	if labels.Protocol() == config.Protocol_GRPC.String() {
-		// 注意：Connect 协议在发生错误时，HTTP 状态码应反映错误（非 200）
-		// 除非你在做流式传输（Streaming），否则不建议强制写死 200
-		w.Header().Set("Grpc-Status", strconv.Itoa(int(status.ToGRPCCode(statusCode))))
-	}
-
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(connectErr)
 }
 
 // notFoundHandler replies to the request with an HTTP 404 not found error.
 func notFoundHandler(w http.ResponseWriter, r *http.Request) {
-	code := http.StatusNotFound
-	message := "404 page not found"
-
-	// 添加CORS响应头
-	origin := r.Header.Get("Origin")
-	if origin != "" {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Length, Content-Type, Authorization, Connect-Protocol-Version, Connect-Accept-Encoding, Connect-Timeout-Ms, Connect-Codec-Compress-Bin")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Max-Age", "600")
-	}
-
-	http.Error(w, message, code)
-	log.Context(r.Context()).Errorw(
-		"source", "accesslog",
-		"host", r.Host,
-		"method", r.Method,
-		"path", r.URL.Path,
-		"query", r.URL.RawQuery,
-		"user_agent", r.Header.Get("User-Agent"),
-		"code", code,
-		"error", message,
-	)
+	code := errorsConst.Write(w, r, errorsConst.ErrRouteNotFound,
+		errorsConst.WithMetadata(map[string]string{"path": r.URL.Path}))
+	logRouteError(r, code, errorsConst.ErrRouteNotFound.Message)
 	_metricRequestsTotal.WithLabelValues("HTTP", r.Method, "/404", strconv.Itoa(code), "", "").Inc()
 }
 
 func methodNotAllowedHandler(w http.ResponseWriter, r *http.Request) {
-	code := http.StatusMethodNotAllowed
-	message := "405 method not allowed"
+	code := errorsConst.Write(w, r, errorsConst.ErrMethodNotAllowed,
+		errorsConst.WithMetadata(map[string]string{"path": r.URL.Path}))
+	logRouteError(r, code, errorsConst.ErrMethodNotAllowed.Message)
+	_metricRequestsTotal.WithLabelValues("HTTP", r.Method, "/405", strconv.Itoa(code), "", "").Inc()
+}
 
-	// 添加CORS响应头
-	origin := r.Header.Get("Origin")
-	if origin != "" {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Length, Content-Type, Authorization, Connect-Protocol-Version, Connect-Accept-Encoding, Connect-Timeout-Ms, Connect-Codec-Compress-Bin")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Max-Age", "600")
-	}
-
-	http.Error(w, message, code)
+func logRouteError(r *http.Request, code int, message string) {
 	log.Context(r.Context()).Errorw(
 		"source", "accesslog",
 		"host", r.Host,
@@ -233,7 +134,6 @@ func methodNotAllowedHandler(w http.ResponseWriter, r *http.Request) {
 		"code", code,
 		"error", message,
 	)
-	_metricRequestsTotal.WithLabelValues("HTTP", r.Method, "/405", strconv.Itoa(code), "", "").Inc()
 }
 
 type interceptors struct {
@@ -469,6 +369,11 @@ func sentBytesAdd(req *http.Request, labels middleware.MetricsLabels, sent int64
 }
 
 func requestsTotalIncr(req *http.Request, labels middleware.MetricsLabels, statusCode int) {
+	// 路由未匹配等场景下没有 endpoint，也就没有 labels
+	if labels == nil {
+		_metricRequestsTotal.WithLabelValues("HTTP", req.Method, req.URL.Path, strconv.Itoa(statusCode), "", "").Inc()
+		return
+	}
 	_metricRequestsTotal.WithLabelValues(labels.Protocol(), req.Method, labels.Path(), strconv.Itoa(statusCode), labels.Service(), labels.BasePath()).Inc()
 }
 
@@ -554,7 +459,8 @@ func tryCloseRouter(in interface{}) {
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			w.WriteHeader(http.StatusBadGateway)
+			// 与其它出错路径保持同一种响应格式，避免前端拿到一个空 body 的 502
+			errorsConst.Write(w, req, errorsConst.ErrBadGateway)
 			buf := make([]byte, 64<<10) //nolint:gomnd
 			n := runtime.Stack(buf, false)
 			logger.Errorf("panic recovered: %+v\n%s", err, buf[:n])

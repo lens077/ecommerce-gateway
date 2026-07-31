@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	gwerrors "github.com/go-kratos/gateway/errors"
 	"github.com/go-kratos/gateway/router"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/gorilla/mux"
@@ -44,7 +45,7 @@ type muxRouter struct {
 func ProtectedHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Forwarded-For") != "" {
-			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			gwerrors.Write(w, r, gwerrors.ErrForbiddenRoute)
 			return
 		}
 		h.ServeHTTP(w, r)

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	gwerrors "github.com/go-kratos/gateway/errors"
 	"github.com/go-kratos/gateway/router/mux"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/golang-jwt/jwt/v5"
@@ -30,7 +31,7 @@ type authService struct {
 func (service *authService) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			http.Error(w, "系统异常", http.StatusInternalServerError)
+			gwerrors.Write(w, req, gwerrors.ErrInternalServer)
 			buf := make([]byte, 64<<10) //nolint:gomnd
 			n := runtime.Stack(buf, false)
 			log.Errorf("panic recovered: %+v\n%s", err, buf[:n])
