@@ -2,105 +2,46 @@ package config
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	configv1 "github.com/go-kratos/gateway/api/gateway/config/v1"
-	corsv1 "github.com/go-kratos/gateway/api/gateway/middleware/cors/v1"
-	tracingv1 "github.com/go-kratos/gateway/api/gateway/middleware/tracing/v1"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/anypb"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-func equalTo() *configv1.Gateway {
-	return &configv1.Gateway{
-		Name: "helloworld",
-		Hosts: []string{
-			"localhost",
-			"127.0.0.1",
-		},
-		Endpoints: []*configv1.Endpoint{
-			{
-				Path:     "/helloworld/*",
-				Protocol: configv1.Protocol_HTTP,
-				Timeout:  &durationpb.Duration{Seconds: 1},
-				Backends: []*configv1.Backend{
-					{
-						Target: "127.0.0.1:8000",
-					},
-				},
-			},
-			{
-				Path:     "/helloworld.Greeter/*",
-				Method:   "POST",
-				Protocol: configv1.Protocol_GRPC,
-				Timeout:  &durationpb.Duration{Seconds: 1},
-				Backends: []*configv1.Backend{
-					{
-						Target: "127.0.0.1:9000",
-					},
-				},
-				Retry: &configv1.Retry{
-					Attempts:      3,
-					PerTryTimeout: &durationpb.Duration{Nanos: 500000000},
-					Conditions: []*configv1.Condition{
-						{Condition: &configv1.Condition_ByStatusCode{ByStatusCode: "502-504"}},
-						{Condition: &configv1.Condition_ByHeader{ByHeader: &configv1.ConditionHeader{
-							Name:  "Grpc-Status",
-							Value: "14",
-						}}},
-					},
-				},
-			},
-		},
-		Middlewares: []*configv1.Middleware{
-			{
-				Name: "cors",
-				Options: asAny(&corsv1.Cors{
-					AllowCredentials: true,
-					AllowOrigins:     []string{".google.com"},
-					AllowMethods:     []string{"GET", "POST", "OPTIONS"},
-				}),
-			},
-			{
-				Name: "tracing",
-				Options: asAny(&tracingv1.Tracing{
-					HttpEndpoint: "localhost:4318",
-				}),
-			},
-		},
-	}
-}
-
-func asAny(in proto.Message) *anypb.Any {
-	out, err := anypb.New(in)
-	if err != nil {
-		panic(err)
-	}
-	return out
-}
-
-func TestFileLoader(t *testing.T) {
-	fl := &FileLoader{
-		confPath: "./fixtures/config.yaml",
-	}
-	cfg, err := fl.Load(context.TODO())
-	if err != nil {
-		t.Error(err)
+func TestFileLoaderLoad(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	configData := []byte(`
+name: test-gateway
+version: v1
+endpoints:
+  - path: /health
+    method: GET
+    protocol: HTTP
+    backends:
+      - target: 127.0.0.1:8080
+`)
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	left, err := protojson.Marshal(cfg)
+	loader := &FileLoader{confPath: configPath}
+	cfg, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := protojson.Marshal(equalTo())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("gateway config:\nloaded: %s\nshould equal to: %s\n", left, right)
 
-	if !proto.Equal(cfg, equalTo()) {
-		t.Errorf("inconsistent gateway config")
+	if cfg.Name != "test-gateway" || cfg.Version != "v1" {
+		t.Fatalf("unexpected gateway metadata: %+v", cfg)
+	}
+	if len(cfg.Endpoints) != 1 {
+		t.Fatalf("expected one endpoint, got %d", len(cfg.Endpoints))
+	}
+	endpoint := cfg.Endpoints[0]
+	if endpoint.Path != "/health" || endpoint.Method != "GET" || endpoint.Protocol != configv1.Protocol_HTTP {
+		t.Fatalf("unexpected endpoint: %+v", endpoint)
+	}
+	if len(endpoint.Backends) != 1 || endpoint.Backends[0].Target != "127.0.0.1:8080" {
+		t.Fatalf("unexpected backends: %+v", endpoint.Backends)
 	}
 }

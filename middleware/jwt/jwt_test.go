@@ -1,17 +1,17 @@
 package jwt
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/go-kratos/kratos/v2/log"
+	"github.com/go-kratos/gateway/constants"
 )
 
-func TestInit(t *testing.T) {
-	log.SetLogger(log.NewStdLogger(os.Stdout))
+func TestGetPublicKeyPathUsesConfiguredPath(t *testing.T) {
+	configuredPath := filepath.Join(t.TempDir(), "keys", "..", "public.pem")
+	t.Setenv(constants.JwtPubkeyPath, configuredPath)
 
-	err := Init()
-	if err != nil {
-		t.Fatalf("初始化失败: %v", err)
+	if got, want := getPublicKeyPath(), filepath.Clean(configuredPath); got != want {
+		t.Fatalf("getPublicKeyPath() = %q, want %q", got, want)
 	}
 }

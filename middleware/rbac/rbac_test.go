@@ -2,21 +2,23 @@ package rbac
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
-func TestFileOperations(t *testing.T) {
-	// 测试读取
-	if _, err := os.ReadFile("testfile"); err != nil {
-		t.Fatal("文件读取失败")
+func TestValidateFileContent(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "policies.csv")
+	if err := os.WriteFile(policyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFileContent(policyPath); err == nil {
+		t.Fatal("expected empty policy file to be rejected")
 	}
 
-	// 测试写入
-	testData := []byte("test content")
-	if err := os.WriteFile("testfile", testData, 0644); err != nil {
-		t.Fatal("文件写入失败")
+	if err := os.WriteFile(policyPath, []byte("p, admin, /api, GET\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-
-	// 清理
-	os.Remove("testfile")
+	if err := validateFileContent(policyPath); err != nil {
+		t.Fatalf("expected non-empty policy file to be accepted: %v", err)
+	}
 }

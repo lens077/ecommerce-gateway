@@ -58,16 +58,19 @@ func isOriginAllowed(origin string, allowOriginHosts []string) bool {
 	if err != nil {
 		return false
 	}
-	originHost := originURL.Host // 包含端口的主机部分（如 "www.example.com:8080"）
+	originHost := strings.ToLower(originURL.Host) // Includes the port, when present.
 
 	for _, allowedHost := range allowOriginHosts {
+		if allowedHost == corsMatchAll {
+			return true
+		}
 		allowedURL, err := url.Parse(allowedHost)
 		if err != nil {
 			continue
 		}
-		allowedHostWithPort := allowedURL.Host
+		allowedHostWithPort := strings.ToLower(allowedURL.Host)
 		if allowedHostWithPort == "" {
-			allowedHostWithPort = allowedURL.Path // 处理无协议的情况（如配置直接写域名）
+			allowedHostWithPort = strings.ToLower(allowedURL.Path) // Supports bare domains.
 		}
 		// 精确匹配（含端口）
 		if allowedHostWithPort == originHost {
@@ -76,7 +79,7 @@ func isOriginAllowed(origin string, allowOriginHosts []string) bool {
 		// 处理通配符（如 http://*.suyiiyii.top:3011）
 		if strings.HasPrefix(allowedHostWithPort, "*.") {
 			domainPart := strings.TrimPrefix(allowedHostWithPort, "*.")
-			if strings.HasSuffix(originHost, domainPart) {
+			if strings.HasSuffix(originHost, "."+domainPart) {
 				return true
 			}
 		}
