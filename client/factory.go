@@ -145,7 +145,6 @@ type nodeApplier struct {
 	picker        selector.Selector
 	healthChecker HealthChecker
 	ctx           context.Context
-	refreshTicker *time.Ticker
 }
 
 func (na *nodeApplier) apply(ctx context.Context) error {
@@ -183,43 +182,18 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 					target.Endpoint, na.endpoint.Path)
 			}
 
-			// 启动定期刷新机制，确保即使 watcher 不工作，也能获取最新的服务列表
-			na.startRefreshLoop(target.Endpoint)
+			// 这里曾经有一个 15s 的 startRefreshLoop 兜底轮询,现已删除。它是
+			// watcher 生命周期 bug 时代的产物:watcher 断了不会重建,所以要靠轮询
+			// 把服务列表补回来。watcher 修好之后它只剩三条害处 ——
+			//  1. 未启动的服务每 15s 刷一条 "not found in registry" WARN,淹没真日志;
+			//  2. 它的 Callback 会调 healthChecker.updateNodes,把失败计数清零,
+			//     导致健康检查器永远攒不满 maxFailures,标不出任何不健康节点;
+			//  3. 与 watcher 推送的节点列表并发写 picker,互相覆盖。
 		default:
 			return fmt.Errorf("unknown scheme: %s", target.Scheme)
 		}
 	}
 	return nil
-}
-
-// startRefreshLoop 启动定期刷新服务列表的循环
-func (na *nodeApplier) startRefreshLoop(serviceName string) {
-	na.refreshTicker = time.NewTicker(constants.ClientRefreshInterval)
-
-	go func() {
-		for {
-			select {
-			case <-na.ctx.Done():
-				na.refreshTicker.Stop()
-				return
-			case <-na.refreshTicker.C:
-				// 主动从 Consul 获取最新的服务列表
-				services, err := na.registry.GetService(na.ctx, serviceName)
-				if err != nil {
-					LOG.Warnf("Failed to refresh service list for %s: %v", serviceName, err)
-					continue
-				}
-				if len(services) == 0 {
-					LOG.Warnf("Empty service list for %s during refresh", serviceName)
-					continue
-				}
-
-				// LOG.Infof("Refreshed service list for %s, got %d instances", serviceName, len(services))
-				// 更新服务列表
-				na.Callback(services)
-			}
-		}
-	}()
 }
 
 var _defaultWeight = int64(10)

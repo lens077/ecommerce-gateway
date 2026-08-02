@@ -126,24 +126,40 @@ func (hc *healthChecker) unregisterNode(node selector.Node) {
 	delete(hc.failureCount, addr)
 }
 
-// updateNodes 更新节点列表
+// updateNodes 用注册中心推来的最新实例列表对齐节点集合。
+//
+// 这里必须是增量语义(diff),不能全删再全加。全删再全加会把每个仍然存在的节点的
+// healthyNodes/failureCount 一并重置成「健康、0 次失败」—— 服务发现每推送一次
+// 就等于给所有节点做一次赦免,失败计数永远攒不到 maxFailures,健康检查器实际上
+// 标不出任何不健康节点,HealthyNodeFilter 形同虚设。
+//
+// 所以:只有新出现的地址才初始化为健康,只有消失的地址才被删除,已存在的地址
+// 保留它当前的健康状态和失败计数,只刷新 node 实例本身(权重、元数据可能变了)。
 func (hc *healthChecker) updateNodes(nodes []selector.Node) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 
-	// 先注销所有旧节点
-	for addr := range hc.nodes {
-		delete(hc.nodes, addr)
-		delete(hc.healthyNodes, addr)
-		delete(hc.failureCount, addr)
+	latest := make(map[string]selector.Node, len(nodes))
+	for _, node := range nodes {
+		latest[node.Address()] = node
 	}
 
-	// 注册新节点
-	for _, node := range nodes {
-		addr := node.Address()
+	// 已消失的实例:连同它的健康状态一起清掉,避免地址复用时继承旧计数
+	for addr := range hc.nodes {
+		if _, ok := latest[addr]; !ok {
+			delete(hc.nodes, addr)
+			delete(hc.healthyNodes, addr)
+			delete(hc.failureCount, addr)
+		}
+	}
+
+	for addr, node := range latest {
+		if _, existed := hc.nodes[addr]; !existed {
+			// 新实例:先当健康的放行,后续由 checkNode 修正
+			hc.healthyNodes[addr] = true
+			hc.failureCount[addr] = 0
+		}
 		hc.nodes[addr] = node
-		hc.healthyNodes[addr] = true
-		hc.failureCount[addr] = 0
 	}
 }
 

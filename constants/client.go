@@ -33,7 +33,4 @@ const (
 
 	// ClientExpectContinueTimeout 客户端Expect-Continue超时
 	ClientExpectContinueTimeout = 1 * time.Second
-
-	// ClientRefreshInterval 客户端服务列表刷新间隔
-	ClientRefreshInterval = 15 * time.Second
 )

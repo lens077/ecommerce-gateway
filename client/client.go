@@ -14,8 +14,14 @@ import (
 var (
 	LOG = log.NewHelper(log.With(log.GetLogger(), "source", "client"))
 
-	// 默认重试次数
-	defaultMaxRetries = 3
+	// 默认尝试次数(不是重试次数):一次 RoundTrip 最多选几个节点。
+	//
+	// 这里必须是 1。重试语义只由路由配置的 retry.attempts 那一层负责 —— 它有
+	// per_try_timeout、有 conditions,知道什么错误值得重试;而这一层什么都没有,
+	// 无延迟、无退避、无条件判断,只会把上层的 attempts 再乘一遍。之前是 3,
+	// 配上路由的 attempts: 2,浏览器一个 POST 最多打上游 6 次。ConnectRPC 全是
+	// POST,没有幂等性保证,盲目重放会造成重复写入。
+	defaultMaxRetries = 1
 )
 
 type client struct {
