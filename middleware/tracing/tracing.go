@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -71,9 +71,9 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 			)
 
 			span.SetAttributes(
-				semconv.HTTPMethodKey.String(req.Method),
-				semconv.HTTPTargetKey.String(req.URL.Path),
-				semconv.NetPeerIPKey.String(req.RemoteAddr),
+				semconv.HTTPRequestMethodKey.String(req.Method),
+				semconv.URLPath(req.URL.Path),
+				semconv.NetworkPeerAddress(req.URL.Hostname()),
 			)
 
 			otel.GetTextMapPropagator().Inject(ctx, carrier)
@@ -86,7 +86,7 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 					span.SetStatus(codes.Ok, "OK")
 				}
 				if reply != nil {
-					span.SetAttributes(semconv.HTTPStatusCodeKey.Int(reply.StatusCode))
+					span.SetAttributes(semconv.HTTPResponseStatusCode(reply.StatusCode))
 				}
 				span.End()
 			}()
