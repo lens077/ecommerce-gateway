@@ -1,0 +1,392 @@
+# 此文件用于配置网关, 项目从consul中读取服务配置, 与该配置文件进行合并
+# 优先级目录合并：在优先级目录中添加或修改配置文件，观察是否生效
+# 配置热更新：修改Consul中的配置或本地优先级目录的配置，确认应用能动态加载新配置
+name: gateway
+version: v1.4.0
+# 环境变量
+envs:
+  # 服务发现
+  CONSUL_ADDR: consul://192.168.3.112:8500
+  #CONSUL_ADDR: consul://localhost:8500
+  # 服务发现配置路径
+  DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
+  # 输出的日志等级
+  LOG_LEVEL: debug
+  # 组织
+  OWNER: lens
+  # Casdoor 地址
+  CASDOOR_URL: http://apikv.com:8000
+  #CASDOOR_URL: https://192.168.3.104
+
+  # 是否使用 TLS, 为 true 则使用, 需要配置CRT_FILE_PATH和KEY_FILE_PATH参数, 指定相对于入口文件(main.go)执行的路径
+  USE_TLS: "false"
+  USE_HTTP3: "false"
+  # TCP for HTTP/1.1 & HTTP/2
+  HTTP_PORT: ":8080"
+  # UDP for HTTP/3
+  HTTP3_PORT: ":443"
+  # TLS 证书路径
+  CRT_FILE_PATH: configs/tls/gateway.crt
+  # TLS Key路径
+  KEY_FILE_PATH: configs/tls/gateway.key
+
+  # JWT 公钥证书
+  JWT_PUBKEY_PATH: configs/secrets/public.pem
+
+  # RBAC模型文件路径
+  MODEL_FILE_PATH: configs/policies/model.conf
+  # RBAC策略文件路径
+  POLICIES_FILE_PATH: configs/policies/policies.csv
+
+middlewares:
+  - name: ip
+  - name: cors
+    options:
+      '@type': type.googleapis.com/gateway.middleware.cors.v1.Cors
+      allowCredentials: true
+      allowHeaders:
+        - Authorization
+        - Content-Type
+        - X-Requested-With
+        - DNT
+        - Sec-Fetch-Dest
+        - Sec-Fetch-Mode
+        - Sec-Fetch-Site
+        - Connect-Protocol-Version
+        - Connect-Accept-Encoding
+        - Connect-Timeout-Ms
+        - Connect-Codec-Compress-Bin
+      allowOrigins:
+        - http://localhost:3000
+        - http://localhost:3005
+        - http://192.168.3.118:30080
+      allowMethods:
+        - OPTIONS
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+  - name: logging
+  - name: tracing
+    options:
+      '@type': type.googleapis.com/gateway.middleware.tracing.v1.Tracing
+      httpEndpoint: 192.168.3.117:4318
+      #      httpEndpoint: otlp-http.app.com:443
+      insecure: true
+  #      tls:
+  #        enable: false
+  #        caPem: "./otel.crt"
+  #        insecureSkipVerify: true
+  #     认证
+  - name: transcoder
+  - name: jwt
+    # 无需认证的接口
+    router_filter:
+      rules:
+        - path: /search.v1.SearchService/Search
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+        - path: /product.v1.ProductService/GetProductDetail
+          methods:
+            - POST
+            - OPTIONS
+        - path: /user.v1.UserService/SignIn
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+        # 支付宝的异步通知/同步回调由支付宝服务端发起,不可能带我们的 JWT。
+        # 它的可信性靠报文签名验证(payment 侧 DecodeNotification),不走网关认证。
+        - path: /payment.v1.PaymentService/HandlePaymentNotify
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+        - path: /payment.v1.PaymentService/HandlePaymentCallback
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+        # 行为埋点和推荐读取必须对未登录用户开放 —— 采集"漫无目的地逛"这件事,
+        # 恰恰发生在用户还没登录的时候。身份用请求体里的 anon_id,
+        # 登录后网关注入的 x-md-global-user-id 会自动接管。
+        - path: /behavior.v1.BehaviorService/Track
+          methods:
+            - POST
+            - OPTIONS
+        - path: /behavior.v1.BehaviorService/Recommend
+          methods:
+            - POST
+            - OPTIONS
+        - path: /behavior.v1.BehaviorService/SimilarItems
+          methods:
+            - POST
+            - OPTIONS
+        # 性能上报同理:未登录用户的 LCP/卡顿同样要采,且 sendBeacon 带不了 JWT 头
+        - path: /telemetry.v1.TelemetryService/CollectWebVitals
+          methods:
+            - POST
+            - OPTIONS
+        # 行政区划是公开的只读字典。用户还没登录就要能在地址表单里选省市区,
+        # 拿不到 JWT 就选不了地址,注册流程直接卡死。
+        - path: /address.v1.RegionService/ListRegions
+          methods:
+            - POST
+            - OPTIONS
+    # 基于用户的接口权限控制
+  - name: rbac
+    # 不需要鉴权的接口
+    router_filter:
+      rules:
+        - path: /search.v1.SearchService/Search
+          methods:
+            - POST
+            - OPTIONS
+        - path: /user.v1.UserService/SignIn
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+        - path: /product.v1.ProductService/GetProductDetail
+          methods:
+            - OPTIONS
+            - POST
+        # 同上:回调没有用户身份,拿不到 x-md-global-user-id,RBAC 必然拒绝
+        - path: /payment.v1.PaymentService/HandlePaymentNotify
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+        - path: /payment.v1.PaymentService/HandlePaymentCallback
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+        # 同上:匿名用户没有角色,RBAC 必然拒绝
+        - path: /behavior.v1.BehaviorService/Track
+          methods:
+            - POST
+            - OPTIONS
+        - path: /behavior.v1.BehaviorService/Recommend
+          methods:
+            - POST
+            - OPTIONS
+        - path: /behavior.v1.BehaviorService/SimilarItems
+          methods:
+            - POST
+            - OPTIONS
+        # 性能上报同理:未登录用户的 LCP/卡顿同样要采,且 sendBeacon 带不了 JWT 头
+        - path: /telemetry.v1.TelemetryService/CollectWebVitals
+          methods:
+            - POST
+            - OPTIONS
+        # 同上:匿名用户没有角色,RBAC 必然拒绝
+        - path: /address.v1.RegionService/ListRegions
+          methods:
+            - POST
+            - OPTIONS
+  - name: bbr
+  - name: circuitbreaker
+
+# 只有当 protocol: GRPC 时，网关才会去除路径前缀
+endpoints:
+  - path: /user*
+    protocol: GRPC
+    #    middlewares:
+    #      - name: rewrite
+    #        options:
+    #          '@type': type.googleapis.com/gateway.middleware.rewrite.v1.Rewrite
+    #          stripPrefix: /user
+    backends:
+      #- target: 'direct://localhost:30001' # 直连模式
+      - target: 'discovery:///user-identity' # 服务发现模式
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /search*
+    protocol: GRPC
+    #          stripPrefix: /user
+    backends:
+      #- target: 'direct://localhost:30002'
+      - target: 'discovery:///search-product'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  # 行为埋点是高频旁路,超时给短一点:上报本身是异步入队,后端毫秒级返回,
+  # 拖到 4s 说明后端已经不健康了,与其让浏览器干等不如快速失败。
+  # 重试同样只留 1 次 —— 埋点丢几条无所谓,重放反而会把曝光计数刷高。
+  - path: /behavior*
+    protocol: GRPC
+    backends:
+      #- target: 'direct://localhost:30011'
+      - target: 'discovery:///behavior-service'
+    timeout: 2s
+    retry:
+      attempts: 1
+      perTryTimeout: 1s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  # 前端性能上报(telemetry.v1),由 behavior 进程顺带实现 —— 域是分开的,
+  # 将来搬去 analytics 服务只改这里的 target。语义与埋点一致:旁路、快速失败。
+  - path: /telemetry*
+    protocol: GRPC
+    backends:
+      - target: 'discovery:///behavior-service'
+    timeout: 2s
+    retry:
+      attempts: 1
+      perTryTimeout: 1s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+  - path: /product*
+    protocol: GRPC
+    #          stripPrefix: /user
+    backends:
+      #- target: 'direct://localhost:30002'
+      - target: 'discovery:///product-service'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /cart*
+    protocol: GRPC
+    #          stripPrefix: /user
+    backends:
+      #- target: 'direct://localhost:30002'
+      - target: 'discovery:///cart-service'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /address*
+    protocol: GRPC
+    #          stripPrefix: /user
+    backends:
+      #- target: 'direct://localhost:30002'
+      - target: 'discovery:///address-service'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /config*
+    protocol: GRPC
+    #          stripPrefix: /config
+    backends:
+      #- target: 'direct://localhost:30010'
+      - target: 'discovery:///config-service'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  # 注意 proto 里的 service 名是小写的 orderService,路径前缀仍是 /order.v1.
+  - path: /order*
+    protocol: GRPC
+    backends:
+      #- target: 'direct://localhost:30004'
+      - target: 'discovery:///order-service'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  # inventory 的 Reserve/ReleaseReserve 是 order→inventory 的服务间调用,
+  # 不是前端接口。路由挂上便于管理端排查,授权在 policies.csv 里只给了 admin。
+  - path: /inventory*
+    protocol: GRPC
+    backends:
+      #- target: 'direct://localhost:30005'
+      - target: 'discovery:///inventory-service'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  - path: /merchant*
+    protocol: GRPC
+    backends:
+      #- target: 'direct://localhost:30007'
+      - target: 'discovery:///merchant-service'
+    timeout: 4s
+    retry:
+      attempts: 2
+      perTryTimeout: 2s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'
+
+  # 创建支付要打支付宝的下单接口,比纯本地查询慢,超时放宽到 8s。
+  # 重试条件只有 502-504 / Grpc-Status 14(连接层没打通),不会重放已被业务处理过的请求。
+  - path: /payment*
+    protocol: GRPC
+    backends:
+      #- target: 'direct://localhost:30008'
+      - target: 'discovery:///payment-service'
+    timeout: 8s
+    retry:
+      attempts: 2
+      perTryTimeout: 4s
+      conditions:
+        - byStatusCode: '502-504'
+        - byHeader:
+            name: 'Grpc-Status'
+            value: '14'

@@ -1,0 +1,33 @@
+p, consumer, /user.v1.UserService/UserProfile, POST, allow
+p, consumer, /cart.v1.CartService/*, POST, allow
+p, consumer, /address.v1.AddressService/*, POST, allow
+p, admin, /config.v1.ConfigService/*, POST, allow
+
+# order: proto 里 service 名是小写的 orderService,路径大小写敏感,别写成 OrderService。
+# 下单是消费者行为;CompleteOrder 是履约侧动作,给消费者等于允许自己把订单标记完成。
+p, consumer, /order.v1.orderService/CreateOrder, POST, allow
+p, merchant, /order.v1.orderService/CompleteOrder, POST, allow
+
+# payment: 发起支付/查支付状态是消费者行为。
+# HandlePaymentNotify / HandlePaymentCallback 是支付宝服务端回调,不带用户身份,
+# 走 config.yaml 里 jwt+rbac 的 router_filter 跳过规则,不在这里授权。
+p, consumer, /payment.v1.PaymentService/CreatePayment, POST, allow
+p, consumer, /payment.v1.PaymentService/GetPaymentStatus, POST, allow
+
+# merchant: 入驻申请由消费者提交/查询,审批与激活只给管理员。
+# 整段 /merchant.v1.MerchantService/* 放给 consumer 的话,申请人可以自己批准自己。
+p, consumer, /merchant.v1.MerchantService/SubmitApplication, POST, allow
+p, consumer, /merchant.v1.MerchantService/GetApplication, POST, allow
+p, admin, /merchant.v1.MerchantService/ApproveApplication, POST, allow
+p, admin, /merchant.v1.MerchantService/RejectApplication, POST, allow
+p, admin, /merchant.v1.MerchantService/ActivateMerchant, POST, allow
+
+# inventory: Reserve/ReleaseReserve 是 order→inventory 的服务间调用,不是前端接口。
+# 只放给 admin —— 放开给 consumer 等于任何登录用户都能预占/释放任意 SKU 的库存。
+p, admin, /inventory.v1.InventoryService/*, POST, allow
+
+p, anyone, /*, .*, deny
+
+g, consumer, public
+g, merchant, consumer
+g, admin, merchant

@@ -39,6 +39,11 @@ bin/
 cmd/gateway/configs
 
 # Configs file
-configs/
+# 只忽略密钥类内容（secrets/tls），config.yaml 与 policies/ 必须入库：
+# 它们是 .service-matrix.yaml 对齐检查（backend/structcheck 网关接线门禁）
+# 的输入，不进 Git 的话该门禁在 CI 上永远缺文件失败
+configs/*
+!configs/config.yaml
+!configs/policies/
 
 Makefile
