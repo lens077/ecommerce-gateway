@@ -4,6 +4,19 @@
 
 HTTP -> Proxy -> Router -> Middleware -> Client -> Selector -> Node
 
+> 本目录基于 go-kratos/gateway 二次开发（上方 badge 与 `go.mod` module 名仍为上游身份），
+> 通过 `git subtree` 同步到独立仓库 [lens077/ecommerce-gateway](https://github.com/lens077/ecommerce-gateway)。
+
+## 文档导航
+
+| 文档 | 内容 |
+|---|---|
+| 本文件 | 运行配置参考：通信模式、环境变量、TLS、中间件、JWT/RBAC |
+| [README-CUSTOM.md](README-CUSTOM.md) | 设计叙事：为什么自建网关、架构与核心特性、与 Traefik 对比 |
+| [README-HealthCheck.md](README-HealthCheck.md) | 主动健康检查专题（部分结论已被 `context/project/ecommerce/gateway/` 的踩坑记录修正） |
+| [docs/ARCHITECTURE_EVOLUTION.md](docs/ARCHITECTURE_EVOLUTION.md) | 演进规划（Cilium 边缘网关 + 本网关转 BFF），**纯规划未落地** |
+| [docs/notes/](docs/notes/) | kratos gateway 源码阅读笔记（note.md、请求流程.md） |
+
 ## 推送
 - 推送到 gateway 单独仓库 ： `git subtree push --prefix=gateway gateway main`
 - 同步到主仓库 ： `git push main main`
@@ -239,7 +252,7 @@ endpoints:
 
 ### 配置文件示例
 
-完整的配置文件示例参考 [configs/config.yaml](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/configs/config.yaml)。
+完整的配置文件示例参考 [configs/config.yaml](./configs/config.yaml)。
 
 ---
 

@@ -52,7 +52,7 @@
 
 ### 🔄 服务发现与负载均衡
 
-**实现文件**：[discovery/consul/consul.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/discovery/consul/consul.go)
+**实现文件**：[discovery/consul/consul.go](./discovery/consul/consul.go)
 
 - 深度集成 Consul 服务发现
 - 支持两种模式：
@@ -63,7 +63,7 @@
 
 ### 🛡️ JWT 认证中间件
 
-**实现文件**：[middleware/jwt/jwt.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/jwt/jwt.go)
+**实现文件**：[middleware/jwt/jwt.go](./middleware/jwt/jwt.go)
 
 - 基于 RSA 公钥验证的 JWT 认证
 - 支持配置热更新（JWT 公钥自动重新加载）
@@ -73,7 +73,7 @@
 
 ### 🚦 RBAC 权限控制
 
-**实现文件**：[middleware/rbac/rbac.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/rbac/rbac.go)
+**实现文件**：[middleware/rbac/rbac.go](./middleware/rbac/rbac.go)
 
 - 基于 Casbin 的权限模型
 - 支持 Redis 策略缓存（可扩展）
@@ -98,7 +98,7 @@
 
 ### ⚡ 请求处理流程
 
-**核心流程**：[proxy/proxy.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/proxy/proxy.go)
+**核心流程**：[proxy/proxy.go](./proxy/proxy.go)
 
 ```
 HTTP 请求 
@@ -191,7 +191,7 @@ HTTP 客户端 (Client)
 
 ### 请求处理完整流程
 
-**实现文件**：[cmd/gateway/main.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/cmd/gateway/main.go)
+**实现文件**：[cmd/gateway/main.go](./cmd/gateway/main.go)
 
 1. **接收请求**：Kratos 服务器接收 HTTP/2 请求
 2. **路由匹配**：Mux 路由器根据路径匹配端点配置

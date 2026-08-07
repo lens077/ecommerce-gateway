@@ -16,7 +16,7 @@
 ## 演进目标
 
 ### 📋 当前架构问题
-- [gateway/main.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/cmd/gateway/main.go) 职责过重：从 SSL 终结到业务路由都在处理
+- [gateway/main.go](../cmd/gateway/main.go) 职责过重：从 SSL 终结到业务路由都在处理
 - 维护成本高：通用基础设施能力需要电商团队维护
 - 能力重复：认证、授权、路由等都是通用需求
 - 可观测性分散：指标、日志、追踪没有统一标准
@@ -88,11 +88,11 @@
 
 | 能力 | 当前位置 | 代码位置 |
 |------|----------|---------|
-| SSL/TLS 终结 | 自建网关 | [main.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/cmd/gateway/main.go#L168) |
-| JWT 认证 | 自建网关 | [middleware/jwt/jwt.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/jwt/jwt.go) |
-| RBAC 授权 | 自建网关 | [middleware/rbac/rbac.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/rbac/rbac.go) |
-| 服务发现路由 | 自建网关 | [discovery/consul/consul.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/discovery/consul/consul.go) |
-| 协议转换 | 自建网关 | [proxy/proxy.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/proxy/proxy.go) |
+| SSL/TLS 终结 | 自建网关 | [main.go](../cmd/gateway/main.go#L168) |
+| JWT 认证 | 自建网关 | [middleware/jwt/jwt.go](../middleware/jwt/jwt.go) |
+| RBAC 授权 | 自建网关 | [middleware/rbac/rbac.go](../middleware/rbac/rbac.go) |
+| 服务发现路由 | 自建网关 | [discovery/consul/consul.go](../discovery/consul/consul.go) |
+| 协议转换 | 自建网关 | [proxy/proxy.go](../proxy/proxy.go) |
 | 业务聚合 | 无 | - |
 
 ### 未来架构（能力分层）
@@ -123,9 +123,9 @@
 
 #### 任务清单
 - [ ] **当前网关能力审计**
-  - 审计 [middleware/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/) 所有中间件
+  - 审计 [middleware/](../middleware/) 所有中间件
   - 记录哪些是通用的，哪些是电商特定的
-  - 分析 [config.yaml.example](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/configs/config.yaml.example) 的所有配置项
+  - 分析 [config.yaml.example](../configs/config.yaml.example) 的所有配置项
 
 - [ ] **Cilium 环境搭建**
   - Kubernetes 环境中安装 Cilium
@@ -253,7 +253,7 @@ spec:
 #### 自建网关改造（最小改动）
 - 保持现有代码不变
 - 只修改配置，监听来自 Cilium 的 `X-From-Cilium` Header
-- 更新 [config/config.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/config/config.go)，添加 Cilium 模式开关
+- 更新 [config/config.go](../config/config.go)，添加 Cilium 模式开关
 
 #### 验证指标
 - SSL 握手成功率 > 99.9%
@@ -320,7 +320,7 @@ spec:
 
 **自建网关改动（移除 JWT 验证）**
 
-修改 [middleware/jwt/jwt.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/jwt/jwt.go)：
+修改 [middleware/jwt/jwt.go](../middleware/jwt/jwt.go)：
 
 ```go
 // 新的 JWT 中间件：只从 Header 读取，不验证
@@ -378,10 +378,10 @@ gateway/                      # 重命名为 ecommerce-bff
 ```
 
 #### 移除的组件
-- [middleware/jwt/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/jwt/) - JWT 验证已移到 Cilium
-- [middleware/cors/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/cors/) - CORS 由 Cilium 处理
-- [middleware/logging/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/logging/) - 可观测性统一到 Cilium
-- [middleware/tracing/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/tracing/) - 追踪统一到 Cilium
+- [middleware/jwt/](../middleware/jwt/) - JWT 验证已移到 Cilium
+- [middleware/cors/](../middleware/cors/) - CORS 由 Cilium 处理
+- [middleware/logging/](../middleware/logging/) - 可观测性统一到 Cilium
+- [middleware/tracing/](../middleware/tracing/) - 追踪统一到 Cilium
 
 #### 新增的 BFF 能力
 
@@ -466,9 +466,9 @@ endpoints:
 - 完成文档更新
 
 #### 清理清单
-- [ ] 移除 [middleware/jwt/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/jwt/jwt.go) 的验证逻辑
+- [ ] 移除 [middleware/jwt/](../middleware/jwt/jwt.go) 的验证逻辑
 - [ ] 移除 TLS 相关配置
-- [ ] 简化 [config/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/config/) 模块
+- [ ] 简化 [config/](../config/) 模块
 - [ ] 更新 README 文档
 
 ---
@@ -568,9 +568,9 @@ spec:
 #### 1. 保留的核心能力
 
 **必须保留**：
-- [proxy/proxy.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/proxy/proxy.go) 中的协议转换
-- [middleware/rbac/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/rbac/rbac.go) 业务授权
-- [middleware/circuitbreaker/](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/middleware/circuitbreaker/circuitbreaker.go) 业务熔断
+- [proxy/proxy.go](../proxy/proxy.go) 中的协议转换
+- [middleware/rbac/](../middleware/rbac/rbac.go) 业务授权
+- [middleware/circuitbreaker/](../middleware/circuitbreaker/circuitbreaker.go) 业务熔断
 
 #### 2. 新增 BFF 聚合层
 
@@ -633,7 +633,7 @@ func (s *BFFService) GetHomepage(ctx context.Context, req *pb.GetHomepageRequest
 
 #### 4. 简化后的 main.go
 
-参考当前 [main.go](file:///Users/sumery/github/lens077/github/sunmery/ecommerce/gateway/cmd/gateway/main.go)，移除的部分：
+参考当前 [main.go](../cmd/gateway/main.go)，移除的部分：
 
 ```go
 // ❌ 移除：JWT 初始化
