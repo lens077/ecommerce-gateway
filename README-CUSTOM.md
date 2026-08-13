@@ -126,6 +126,13 @@ HTTP 客户端 (Client)
 - 路由规则、中间件配置零重启更新
 - JWT 公钥、RBAC 策略文件自动重新加载
 - 配置优先级：本地优先级目录覆盖 Config Center 路由配置
+- Config Center Watch 断线后按 1s～30s 指数退避重连；空值、删除或无效更新保留上一份可用配置
+
+正常启动由 `CONFIG_SOURCE_FILE` 指向本地 selector，selector 定位同一 namespace/environment 下的
+四个条目：`config.yaml`、`secrets/public.pem`、`policies/policies.csv`、`policies/model.conf`。
+四个条目必须设置 `is_secret=false`，否则机器 token 读取时只会得到脱敏占位值，网关无法解析；
+selector 内的机器 token 与 TLS 私钥仍只放本地或 Kubernetes Secret。Consul 只负责服务发现，
+不存在 Consul KV 配置回退。示例见 [configs/source.yaml.example](configs/source.yaml.example)。
 
 ### 📊 可观测性
 
@@ -150,7 +157,7 @@ HTTP 客户端 (Client)
 
 - 架构与 9 层中间件链实际顺序：根仓 `docs/architecture/ecommerce-gateway.html`（交互式架构图）
   + [docs/REQUEST_FLOW.md](docs/REQUEST_FLOW.md)（带代码锚点的文字版全链路）
-- 配置说明与环境变量表：[README.md](README.md)；实际配置以 [configs/config.yaml](configs/config.yaml) 为准
+- 配置说明与环境变量表：[README.md](README.md)；Config Center 条目模板以 [configs/config.yaml](configs/config.yaml) 为准
 
 ## 与 Traefik 的对比
 
@@ -183,7 +190,7 @@ HTTP 客户端 (Client)
 见 [README.md](README.md) 环境变量表与根仓 README「运行 · 网关」。
 （原「快速开始」章 2026-08-13 删除：`configs/config.yaml.example`、`make docker-build`、
 `deploy/dev/docker-compose.yml`、`curl /healthz` 均不存在——网关自身不暴露 healthz，
-`/healthz` 只是网关探测后端的路径。前置要求同根仓：Go 1.26+、Consul。）
+`/healthz` 只是网关探测后端的路径。前置要求同根仓：Go 1.26+、Config Center、Consul 服务发现。）
 
 ## 项目结构
 

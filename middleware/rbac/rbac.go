@@ -1,13 +1,13 @@
 package rbac
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -41,7 +41,7 @@ var (
 )
 
 // InitEnforcer 初始化RBAC系统
-func InitEnforcer() error {
+func InitEnforcer(ctx context.Context, source loader.Source) error {
 	if initialized {
 		return nil
 	}
@@ -57,13 +57,7 @@ func InitEnforcer() error {
 		return initPathsErr
 	}
 
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("获取Consul加载器失败: %v", err)
-		return err
-	}
-
-	if err := syncEssentialFiles(load); err != nil {
+	if err := syncEssentialFiles(ctx, source); err != nil {
 		logger.Errorf("文件同步失败: %v", err)
 		return err
 	}
@@ -73,12 +67,12 @@ func InitEnforcer() error {
 		return err
 	}
 
-	setupWatchers(load)
+	setupWatchers(ctx, source)
 	middleware.Register("rbac", Middleware)
 	initialized = true
 	logger.Info("RBAC 系统初始化完成")
 
-	return err
+	return nil
 }
 
 func initPaths() error {
@@ -97,20 +91,26 @@ func initPaths() error {
 	return nil
 }
 
-func syncEssentialFiles(load *loader.ConsulFileLoader) error {
+func syncEssentialFiles(ctx context.Context, source loader.Source) error {
 	logger.Info("开始同步策略文件...")
 	defer logger.Debugf("文件同步完成")
 
-	if err := load.SyncFile(
-		path.Join(constants.PoliciesDirName, constants.PoliciesfileName),
+	policyKey := loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.PoliciesfileName)))
+	if err := loader.SyncFile(
+		ctx,
+		source,
+		policyKey,
 		localPolicyFile,
 		validateFileContent,
 	); err != nil {
 		return err
 	}
 
-	return load.SyncFile(
-		path.Join(constants.PoliciesDirName, constants.ModelFileFileName),
+	modelKey := loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.ModelFileFileName)))
+	return loader.SyncFile(
+		ctx,
+		source,
+		modelKey,
 		localModelFile,
 		validateFileContent,
 	)
@@ -162,80 +162,55 @@ func initializeEnforcer() error {
 		logger.Errorf("[RBAC] 创建执行器失败: %v", err)
 		return errors.ErrAuthCheckFailed
 	}
+	if err := enforcer.LoadPolicy(); err != nil {
+		logger.Errorf("[RBAC] 加载策略失败: %v", err)
+		return fmt.Errorf("load RBAC policy: %w", err)
+	}
 
+	// Build and load the candidate before taking the write lock. Requests keep
+	// using the last known-good enforcer until the replacement is fully valid.
 	enforcerMutex.Lock()
 	defer enforcerMutex.Unlock()
 	syncedCachedEnforcer = enforcer
-	syncedCachedEnforcer.StartAutoLoadPolicy(1 * time.Minute)
 	return nil
 }
 
-func setupWatchers(load *loader.ConsulFileLoader) {
+func setupWatchers(ctx context.Context, source loader.Source) {
+	if source.Name() == constants.ConfigSourceFile {
+		return
+	}
+
 	watchPaths := []struct {
-		path     string
-		callback func()
+		key      string
+		target   string
+		callback func() error
 	}{
-		{path.Join(constants.PoliciesDirName, constants.PoliciesfileName), onPolicyUpdate},
-		{path.Join(constants.PoliciesDirName, constants.ModelFileFileName), onModelUpdate},
+		{
+			loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.PoliciesfileName))),
+			localPolicyFile,
+			reloadPolicy,
+		},
+		{
+			loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.ModelFileFileName))),
+			localModelFile,
+			initializeEnforcer,
+		},
 	}
 
 	for _, w := range watchPaths {
-		if err := load.Watch(w.path, w.callback); err != nil {
-			logger.Errorf("启动监听失败: %s: %v", w.path, err)
-		}
+		w := w
+		go func() {
+			err := loader.WatchFile(ctx, source, w.key, w.target, validateFileContent, w.callback,
+				func(err error) { logger.Errorf("配置 %s 更新失败，保留当前版本: %v", w.key, err) })
+			if err != nil && ctx.Err() == nil {
+				logger.Errorf("配置 %s 监听退出: %v", w.key, err)
+			}
+		}()
 	}
 }
 
-func onPolicyUpdate() {
-	logger.Info("[RBAC] 检测到策略变更，开始处理...")
-	defer logger.Info("[RBAC] 策略更新处理完成")
-
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Error(err)
-		return
-	}
-
-	if err := load.SyncFile(
-		path.Join(constants.PoliciesDirName, constants.PoliciesfileName),
-		localPolicyFile,
-		validateFileContent,
-	); err != nil {
-		logger.Errorf("[RBAC] 策略文件同步失败: %v", err)
-		return
-	}
-
-	enforcerMutex.RLock()
-	defer enforcerMutex.RUnlock()
-	if err := syncedCachedEnforcer.LoadPolicy(); err != nil {
-		logger.Errorf("[RBAC] 策略重载失败: %v", err)
-	}
-}
-
-func onModelUpdate() {
-	logger.Info("[RBAC] 检测到模型变更，开始处理...")
-	defer logger.Info("[RBAC] 模型更新处理完成")
-
-	// 新增文件同步逻辑
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("[RBAC] 获取加载器失败: %v", err)
-		return
-	}
-
-	if err := load.SyncFile(
-		path.Join(constants.PoliciesDirName, constants.ModelFileFileName),
-		localModelFile,
-		validateFileContent,
-	); err != nil {
-		logger.Errorf("[RBAC] 模型文件同步失败: %v", err)
-		return
-	}
-
-	// 重新初始化执行器
-	if err := initializeEnforcer(); err != nil {
-		logger.Errorf("[RBAC] 模型重载失败: %v", err)
-	}
+func reloadPolicy() error {
+	return initializeEnforcer()
 }
 
 type Cache struct {

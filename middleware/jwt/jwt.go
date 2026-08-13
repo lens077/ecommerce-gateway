@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"context"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -9,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,7 +39,7 @@ var (
 	mu            sync.RWMutex
 )
 
-func Init() error {
+func Init(ctx context.Context, source loader.Source) error {
 	if initialized {
 		return nil
 	}
@@ -53,16 +53,12 @@ func Init() error {
 		return kratoserrors.New(500, "INTERNAL_ERROR", "创建密钥目录失败")
 	}
 
-	// 获取Loader实例
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("[JWT] 获取Loader失败: %v", err)
-		return kratoserrors.New(500, "INTERNAL_ERROR", "获取Loader失败")
-	}
-
 	// 同步公钥文件
-	if err := load.SyncFile(
-		path.Join(constants.SecretsDirName, constants.JwtPublicFileName),
+	key := loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.SecretsDirName, constants.JwtPublicFileName)))
+	if err := loader.SyncFile(
+		ctx,
+		source,
+		key,
 		publicKeyPath,
 		validatePublicKey,
 	); err != nil {
@@ -76,13 +72,14 @@ func Init() error {
 		return kratoserrors.New(500, "INTERNAL_ERROR", "初始公钥加载失败")
 	}
 
-	// 启动监听
-	if err := load.Watch(
-		path.Join(constants.SecretsDirName, constants.JwtPublicFileName),
-		onPublicKeyUpdate,
-	); err != nil {
-		logger.Errorf("[JWT] 启动监听失败: %v", err)
-		return kratoserrors.New(500, "INTERNAL_ERROR", "启动监听失败")
+	if source.Name() != constants.ConfigSourceFile {
+		go func() {
+			err := loader.WatchFile(ctx, source, key, publicKeyPath, validatePublicKey, reloadPublicKey,
+				func(err error) { logger.Errorf("[JWT] 公钥更新失败，保留当前公钥: %v", err) })
+			if err != nil && ctx.Err() == nil {
+				logger.Errorf("[JWT] 公钥监听退出: %v", err)
+			}
+		}()
 	}
 
 	middleware.Register("jwt", Middleware)
@@ -100,32 +97,6 @@ func getPublicKeyPath() string {
 		constants.SecretsDirName,
 		constants.JwtPublicFileName,
 	)
-}
-
-func onPublicKeyUpdate() {
-	logger.Info("[JWT] 检测到公钥变更，开始处理...")
-	defer logger.Info("[JWT] 更新处理完成")
-
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("[JWT] 获取加载器失败: %v", err)
-		return
-	}
-
-	// 重新同步最新公钥文件
-	if err := load.SyncFile(
-		path.Join(constants.SecretsDirName, constants.JwtPublicFileName),
-		publicKeyPath,
-		validatePublicKey,
-	); err != nil {
-		logger.Errorf("[JWT] 公钥同步失败: %v", err)
-		return
-	}
-
-	// 重新加载公钥
-	if err := reloadPublicKey(); err != nil {
-		logger.Errorf("[JWT] 公钥重载失败: %v", err)
-	}
 }
 
 func reloadPublicKey() error {

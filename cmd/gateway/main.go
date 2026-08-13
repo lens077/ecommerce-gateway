@@ -2,15 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
+	configv1 "github.com/go-kratos/gateway/api/gateway/config/v1"
 	"github.com/go-kratos/gateway/client"
 	"github.com/go-kratos/gateway/config"
-	configLoader "github.com/go-kratos/gateway/config/config-loader"
 	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/gateway/discovery"
 	"github.com/go-kratos/gateway/middleware"
@@ -46,10 +44,8 @@ import (
 )
 
 var (
-	ctrlName          string
 	ctrlService       string
 	consulAddr        string
-	proxyConfig       string
 	priorityConfigDir string
 	withDebug         bool
 	logger            = log.NewHelper(log.With(log.DefaultLogger, "module", "cmd/main"))
@@ -57,12 +53,19 @@ var (
 
 func init() {
 	initConfig()
-	loader.DownloadEssentialFiles()
 }
 
 func main() {
-	// 加载主配置（会设置环境变量）
-	confLoader, err := config.NewFileLoader(proxyConfig, priorityConfigDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	configSource, err := loader.NewSource()
+	if err != nil {
+		logger.Fatalf("配置源初始化失败: %v", err)
+	}
+	logger.Infof("配置源已选择: %s", configSource.Name())
+
+	confLoader, err := config.NewSourceLoader(configSource, priorityConfigDir)
 	if err != nil {
 		logger.Fatalf("配置加载器初始化失败: %v", err)
 	}
@@ -80,18 +83,22 @@ func main() {
 		}
 		// logger.Infof("设置环境变量: %s: %v", k, v)
 	}
+	loadRuntimeConfig()
+	if ctrlService != "" {
+		logger.Fatalf("ctrlService is incompatible with Config Center; migrate the control-plane configuration first")
+	}
 
 	// 5. 初始化中间件
 	// JWT 中间件初始化
-	jwtErr := jwt.Init()
+	jwtErr := jwt.Init(ctx, configSource)
 	if jwtErr != nil {
 		logger.Fatalf("JWT 中间件初始化失败: %v", jwtErr)
 	}
 
 	// RBAC 中间件初始化
-	rbacErr := rbac.InitEnforcer()
+	rbacErr := rbac.InitEnforcer(ctx, configSource)
 	if rbacErr != nil {
-		logger.Fatalf("RBAC 中间件初始化失败: %v", jwtErr)
+		logger.Fatalf("RBAC 中间件初始化失败: %v", rbacErr)
 		return
 	}
 
@@ -107,44 +114,15 @@ func main() {
 	}
 	circuitbreaker.Init(clientFactory)
 
-	// 加载配置
-	ctx := context.Background()
-	var ctrlLoader *configLoader.CtrlConfigLoader
-	if ctrlService != "" {
-		logger.Infof("setup control service to: %q", ctrlService)
-		ctrlLoader = configLoader.New(ctrlName, ctrlService, proxyConfig, priorityConfigDir)
-		if err := ctrlLoader.Load(ctx); err != nil {
-			logger.Errorf("failed to do initial load from control service: %v, using local config instead", err)
-		}
-		if err := ctrlLoader.LoadFeatures(ctx); err != nil {
-			logger.Errorf("failed to do initial feature load from control service: %v, using default value instead", err)
-		}
-		go ctrlLoader.Run(ctx)
-	}
-
-	defer confLoader.Close()
-	// bc, err := confLoader.Load(context.Background())
-	// if err != nil {
-	// 	logger.Fatalf("failed to load config: %v", err)
-	// }
-
 	// 更新服务端点配置(包括中间件) 会重置路由表 根据端点配置，创建路由处理器
 	// 路由处理器中 包含一个客户端以及中间件调用链
 	if err := p.Update(bc); err != nil {
 		logger.Fatalf("failed to update service config bc: %v", err)
 	}
-	reloader := func() error {
-		logger.Info("reloader: 开始加载配置...")
-
-		bc, err := confLoader.Load(context.Background())
-		if err != nil {
-			logger.Errorf("failed to load config: %v", err)
-
-			return err
-		}
+	reloader := func(next *configv1.Gateway) error {
 		logger.Info("reloader: 配置加载成功，开始更新路由...")
 
-		if err := p.Update(bc); err != nil {
+		if err := p.Update(next); err != nil {
 			logger.Errorf("failed to update service config: %v", err)
 
 			return err
@@ -163,9 +141,6 @@ func main() {
 	if withDebug {
 		debug.Register("proxy", p)
 		debug.Register("config", confLoader)
-		if ctrlLoader != nil {
-			debug.Register("ctrl", ctrlLoader)
-		}
 		serverHandler = debug.MashupWithDebugHandler(p)
 	}
 
@@ -204,25 +179,15 @@ func initConfig() {
 	rand.Seed(uint64(time.Now().Nanosecond()))
 
 	withDebug = os.Getenv(constants.Debug) == "true"
-	proxyConfig = os.Getenv(constants.ConsulConfigPath)
-	if proxyConfig == "" {
-		proxyConfig = "config.yaml" // 默认值
-	}
 	priorityConfigDir = os.Getenv(constants.PriorityConfigDir)
-	ctrlName = os.Getenv("CTRL_NAME")
-	if ctrlName == "" {
-		ctrlName = os.Getenv("advertiseName")
-	}
+}
+
+func loadRuntimeConfig() {
+	withDebug = os.Getenv(constants.Debug) == "true"
 	ctrlService = os.Getenv("ctrlService")
 	consulAddr = os.Getenv(constants.ConsulAddr)
 	if consulAddr == "" {
-		consulAddr = "localhost:8500"
-	}
-	// 自动组合Consul配置路径
-	if consulAddr != "" && !strings.HasPrefix(proxyConfig, "consul://") {
-		// 去除consulAddr可能包含的consul://前缀
-		discoveryAddr := strings.TrimPrefix(consulAddr, "consul://")
-		proxyConfig = fmt.Sprintf("consul://%s/%s", discoveryAddr, proxyConfig)
+		consulAddr = "consul://localhost:8500"
 	}
 }
 

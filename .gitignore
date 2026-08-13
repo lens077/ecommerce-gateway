@@ -44,6 +44,8 @@ cmd/gateway/configs
 # 的输入，不进 Git 的话该门禁在 CI 上永远缺文件失败
 configs/*
 !configs/config.yaml
+!configs/source.yaml.example
 !configs/policies/
 
-Makefile
+# Local Config Center selector; it contains the machine token.
+configs/source.dev.yaml

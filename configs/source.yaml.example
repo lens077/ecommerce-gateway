@@ -1,0 +1,15 @@
+# This local selector bootstraps the gateway before it has any remote config.
+# The four gateway entries live under this namespace/environment:
+#   config.yaml, secrets/public.pem, policies/policies.csv, policies/model.conf.
+# Keep those entries non-secret: Config Center masks values marked is_secret,
+# so a machine-token reader cannot parse them. TLS private keys stay in a local
+# or Kubernetes Secret and must not be stored in Config Center.
+type: config_center
+config_center:
+  address: http://127.0.0.1:30010
+  namespace: gateway
+  environment: dev
+  key: config.yaml
+  # Keep the actual token in the ignored source.dev.yaml or a Kubernetes Secret.
+  service_token: ""
+  client_name: ecommerce-gateway

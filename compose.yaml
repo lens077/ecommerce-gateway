@@ -7,9 +7,8 @@
 # 必须接在 ecommerce 网络里:后端容器注册进 Consul 的是网桥内的 172.x 地址,
 # 网关不在同一网络就 discovery 得到节点也连不上。
 #
-# POLICIES_FILE_PATH / MODEL_FILE_PATH 是「落盘目的地」而不是数据源 ——
-# middleware/rbac 启动时从 Consul KV 的 ecommerce/gateway/policies/ 下同步到这两个
-# 路径再交给 casbin,所以镜像里没有这两个文件是正常的(Dockerfile 只建了空目录)。
+# POLICIES_FILE_PATH / MODEL_FILE_PATH 是「落盘目的地」而不是数据源；
+# 网关从 Config Center 拉取并热更新后再交给 Casbin。
 
 services:
 
@@ -27,21 +26,18 @@ services:
       - "8080:8080"
     environment:
       - OWNER=ecommerce
-      - CASDOOR_URL=http://apikv.com:8000
-      # CONSUL_CONFIG_PATH: 网关自身的路由配置; CONSUL_CONFIG_PREFIX: policies/model 的 KV 前缀。
-      # 缺 PREFIX 的话 RBAC 拿不到 policies.csv,所有请求都会被默认 deny。
+      - CASDOOR_URL=https://casdoor.apikv.com
+      - SERVICE_NAME=ecommerce-gateway
+      - CONFIG_SOURCE_FILE=/etc/ecommerce/config-source/gateway.yaml
+      # Consul 只用于服务发现。
       - CONSUL_ADDR=consul://192.168.3.112:8500
-      - CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml
-      - CONSUL_CONFIG_PREFIX=ecommerce/gateway
       - POLICIES_FILE_PATH=./configs/policies/policies.csv
       - MODEL_FILE_PATH=./configs/policies/model.conf
       - USE_TLS=false
       - USE_HTTP3=false
       - HTTP_PORT=8080
-    command:
-      - "/app/gateway"
-      - "-conf"
-      - "/app/configs/config.yaml"
+    volumes:
+      - ./configs/source.dev.yaml:/etc/ecommerce/config-source/gateway.yaml:ro
     restart: on-failure:3
 
 networks:

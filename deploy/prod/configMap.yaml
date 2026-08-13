@@ -6,7 +6,6 @@ data:
   OWNER: "ecommerce"
   CASDOOR_URL: "https://apikv.com:8081"
   CONSUL_ADDR: "consul://apikv.com:8500"
-  DISCOVERY_CONFIG_PATH: "ecommerce/gateway/config.yaml"
   POLICIES_FILE_PATH: "./configs/policies/policies.csv"
   MODEL_FILE_PATH: "./configs/policies/model.conf"
   USE_TLS: "false"

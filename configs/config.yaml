@@ -1,6 +1,6 @@
-# 此文件用于配置网关, 项目从consul中读取服务配置, 与该配置文件进行合并
+# 此文件是 Config Center 中 gateway/<env>/config.yaml 的可审查模板。
 # 优先级目录合并：在优先级目录中添加或修改配置文件，观察是否生效
-# 配置热更新：修改Consul中的配置或本地优先级目录的配置，确认应用能动态加载新配置
+# 配置热更新：修改 Config Center 或本地优先级目录的配置，确认应用能动态加载新配置
 name: gateway
 version: v1.4.0
 # 环境变量
@@ -8,15 +8,12 @@ envs:
   # 服务发现
   CONSUL_ADDR: consul://192.168.3.112:8500
   #CONSUL_ADDR: consul://localhost:8500
-  # 服务发现配置路径
-  DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
   # 输出的日志等级
   LOG_LEVEL: debug
   # 组织
   OWNER: lens
   # Casdoor 地址
-  CASDOOR_URL: http://apikv.com:8000
-  #CASDOOR_URL: https://192.168.3.104
+  CASDOOR_URL: https://casdoor.apikv.com
 
   # 是否使用 TLS, 为 true 则使用, 需要配置CRT_FILE_PATH和KEY_FILE_PATH参数, 指定相对于入口文件(main.go)执行的路径
   USE_TLS: "false"
@@ -326,7 +323,6 @@ endpoints:
             name: 'Grpc-Status'
             value: '14'
 
-  # 注意 proto 里的 service 名是小写的 orderService,路径前缀仍是 /order.v1.
   - path: /order*
     protocol: GRPC
     backends:

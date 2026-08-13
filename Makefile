@@ -2,7 +2,7 @@ API_PROTO_FILES=$(shell find api -name *.proto)
 REPOSITORY ?= ccr.ccs.tencentyun.com/sumery/ecommerce-gateway
 # 传给 Dockerfile 的 ARG 名是 GO_IMAGE(下划线),别写成 GOIMAGE —— 那样是空传,
 # 实际用的是 Dockerfile 的默认值。这里的值必须 >= go.mod 要求的 go 版本。
-GOIMAGE ?= golang:1.25.1-alpine3.22
+GOIMAGE ?= golang:1.26.5-alpine3.22
 VERSION ?= latest
 GATEWAY_PORT ?= 8080
 PLATFORM_1 ?= linux/amd64
@@ -15,12 +15,18 @@ api:
  	  --go_out=paths=source_relative:./api \
 	  $(API_PROTO_FILES)
 
+.PHONY: dev-file
+dev-file:
+	env -u CONFIG_SOURCE_FILE \
+	CONFIG_SOURCE=file \
+	CONFIG_FILE=configs/config.yaml \
+	go run ./cmd/gateway
+
 .PHONY: dev
 dev:
-	CASDOOR_URL=http://apikv.com:8000 \
+	CASDOOR_URL=https://casdoor.apikv.com \
 	CONSUL_ADDR=consul://192.168.3.112:8500 \
-	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
-	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
+	CONFIG_SOURCE_FILE=configs/source.dev.yaml \
 	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
 	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
 	USE_TLS=false \

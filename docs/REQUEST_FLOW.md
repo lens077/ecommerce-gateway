@@ -7,20 +7,45 @@
 
 ### 1. 配置加载
 
-**入口**: [cmd/gateway/main.go](../cmd/gateway/main.go#L62-L73)
+**入口**：[cmd/gateway/main.go](../cmd/gateway/main.go) 的 `main`
 
 ```go
-// 先建配置源抽象（Consul / 文件由 loader 决定），再建加载器
-configSource, err := loader.NewSource()                                // main.go:62
+ctx, cancel := context.WithCancel(context.Background())
+// 正常启动读取 CONFIG_SOURCE_FILE；CONFIG_SOURCE=file 仅供显式本地测试。
+configSource, err := loader.NewSource()
 confLoader, err := config.NewSourceLoader(configSource, priorityConfigDir) // main.go:68
-// 加载配置
-bc, loadErr := confLoader.Load(context.Background())
+bc, loadErr := confLoader.Load(ctx)
+// config.yaml 中的 envs 必须先注入，Consul 服务发现和中间件随后才初始化。
+for key, value := range bc.Envs {
+    _ = os.Setenv(key, value)
+}
+loadRuntimeConfig()
 ```
 
-**配置加载器**: [config/config.go](../config/config.go#L210-L254)
-- 支持从 Consul KV 或本地文件加载
-- YAML 转 JSON 解析
-- 合并优先级目录配置
+**配置源**：[pkg/loader/source.go](../pkg/loader/source.go)
+
+正常模式下，本地 selector 通过 `CONFIG_SOURCE_FILE` 提供 Config Center 地址、namespace、
+environment、主 key 与机器 token。主 key 可以是 `config.yaml`，也可以是
+`gateway/config.yaml`；其余三个条目会相对主 key 推导，因此两种布局都保持为一组：
+
+| 用途 | 相对主 key 的路径 |
+|---|---|
+| 路由、环境变量与中间件 | `config.yaml` |
+| JWT 验签公钥 | `secrets/public.pem` |
+| Casbin 策略 | `policies/policies.csv` |
+| Casbin 模型 | `policies/model.conf` |
+
+这四个条目必须设置 `is_secret=false`：Config Center 会把密钥条目的读取结果脱敏为
+`******`，机器 token 无法据此启动。selector 本身的机器 token、TLS 私钥等真正凭据只存于
+本地或 Kubernetes Secret。Consul 不再承载 Gateway 配置，只保留服务发现职责。
+
+**配置加载器**：[config/config.go](../config/config.go) 的 `FileLoader`
+
+- 启动时拉取并解析主配置，失败或缺少任一必需条目时快速失败，不回退 Consul KV。
+- YAML 转 JSON 后解码，并合并 `PRIORITY_CONFIG` 目录中的 endpoint 覆盖。
+- 首次 `Proxy.Update` 成功后才注册 Watch，避免监听先推进快照、路由应用器尚未就绪的竞态。
+- Config Center Watch 断线后按 1s～30s 指数退避重连；空值、删除、解析失败或应用失败时保留上一份可用快照。
+- JWT 与 RBAC 文件先写临时文件、校验并原子替换；运行时应用失败时同时恢复文件与上一份运行态。
 
 ### 2. 中间件初始化
 
@@ -463,4 +488,5 @@ middlewares:
 | 限流 | [middleware/bbr/bbr.go](../middleware/bbr/bbr.go) |
 | 中间件注册 | [middleware/registry.go](../middleware/registry.go) |
 | 路由 | [router/mux/mux.go](../router/mux/mux.go) |
-| 配置加载 | [config/config.go](../config/config.go) |
+| Config Center 选源与文件同步 | [pkg/loader/source.go](../pkg/loader/source.go) |
+| 路由配置加载与热更新 | [config/config.go](../config/config.go) |

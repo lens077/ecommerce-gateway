@@ -1,5 +1,5 @@
 # 定义基础镜像的 Golang 版本
-ARG GO_IMAGE=golang:1.25.1-alpine3.22
+ARG GO_IMAGE=golang:1.26.5-alpine3.22
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 WORKDIR /src
@@ -72,20 +72,24 @@ RUN apk add --no-cache ca-certificates tzdata && \
 # RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 # RUN echo 'Asia/Shanghai' >/etc/timezone
 
-# USER appuser
+RUN addgroup -g 1000 appgroup && \
+    adduser -D -H -u 1000 -G appgroup appuser
 
 # 创建应用目录结构
 RUN mkdir -pv ./configs/{tls,policies}
+RUN chown -R appuser:appgroup /app
 RUN ls -l ./configs/
 
 # 设置默认工作目录
 WORKDIR /app
 
+USER appuser
+
 # 指定容器对外暴露的端口号
 EXPOSE $GATEWAY_PORT
 
 # 设置容器启动时执行的命令
-CMD ["/app/gateway", "-conf", "/app/configs/config.yaml"]
+CMD ["/app/gateway"]
 
 # 构建Docker所属的当前平台与架构的二进制文件, 进到当前的backend目录
 # Docker 容器在 Linux 内核上运行，即便是在 macOS 或 Windows 环境中。
@@ -128,4 +132,3 @@ CMD ["/app/gateway", "-conf", "/app/configs/config.yaml"]
 
 # 运行
 # docker compose up -d
-

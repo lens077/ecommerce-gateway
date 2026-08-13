@@ -11,14 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
+	"sort"
 	"sync"
 	"time"
 
-	"github.com/go-kratos/gateway/constants"
-	"github.com/hashicorp/consul/api"
-
 	configv1 "github.com/go-kratos/gateway/api/gateway/config/v1"
+	"github.com/go-kratos/gateway/pkg/loader"
 	"github.com/go-kratos/kratos/v2/log"
 	"google.golang.org/protobuf/encoding/protojson"
 	"sigs.k8s.io/yaml"
@@ -30,7 +28,7 @@ var (
 	_jsonOptions = &protojson.UnmarshalOptions{DiscardUnknown: true}
 )
 
-type OnChange func() error
+type OnChange func(*configv1.Gateway) error
 
 // ConfigLoader 配置加载接口
 type ConfigLoader interface {
@@ -41,81 +39,35 @@ type ConfigLoader interface {
 
 // FileLoader 文件加载器
 type FileLoader struct {
-	confPath           string            // conf file path
+	source             loader.Source
+	confKey            string
+	configData         []byte
 	confSHA256         string            // conf file hash
 	priorityDirectory  string            // 优先级更高的配置目录
 	priorityConfigHash map[string]string // priorityConfig hash
 	watchCancel        context.CancelFunc
+	closed             bool
+	applyLock          sync.Mutex
 	lock               sync.RWMutex
 	onChangeHandlers   []OnChange
-	// Consul相关字段
-	consulClient *api.Client
-	consulPath   string
 }
 
 // NewFileLoader 创建文件加载器
 func NewFileLoader(confPath string, priorityDirectory string) (*FileLoader, error) {
+	return NewSourceLoader(loader.NewLocalSource(confPath), priorityDirectory)
+}
+
+// NewSourceLoader creates a loader for the selected Config Center or explicit
+// local-file source.
+func NewSourceLoader(source loader.Source, priorityDirectory string) (*FileLoader, error) {
+	if source == nil {
+		return nil, errors.New("configuration source is nil")
+	}
 	fl := &FileLoader{
-		confPath:          confPath,
+		source:            source,
+		confKey:           source.MainKey(),
 		priorityDirectory: priorityDirectory,
 	}
-
-	// 解析Consul路径
-	if strings.HasPrefix(confPath, "consul://") {
-		addressPath := strings.TrimPrefix(confPath, "consul://")
-		parts := strings.SplitN(addressPath, "/", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("无效的 Consul 路径格式: %s", confPath)
-		}
-
-		// 创建默认配置
-		c := api.DefaultConfig()
-		c.Address = parts[0]
-
-		// 从环境变量读取默认值
-		if scheme := os.Getenv(constants.ConsulScheme); scheme != "" {
-			c.Scheme = scheme
-		} else if strings.HasSuffix(parts[0], ":443") {
-			// 如果端口是 443，默认使用 https
-			c.Scheme = "https"
-		} else {
-			c.Scheme = "http"
-		}
-
-		// 从环境变量读取 TLS 配置
-		insecureSkipVerify := false
-		if insecureStr := os.Getenv(constants.ConsulInsecureSkipVerify); insecureStr != "" {
-			insecureSkipVerify = insecureStr == "true"
-		} else if c.Scheme == "https" {
-			// 如果使用 https，默认禁用证书验证（开发环境常见自签名证书）
-			insecureSkipVerify = true
-		}
-
-		if insecureSkipVerify {
-			c.TLSConfig = api.TLSConfig{
-				InsecureSkipVerify: true,
-			}
-		}
-
-		// 从环境变量读取 Token
-		if token := os.Getenv(constants.ConsulToken); token != "" {
-			c.Token = token
-		}
-
-		// 从环境变量读取 Datacenter
-		if datacenter := os.Getenv(constants.ConsulDatacenter); datacenter != "" {
-			c.Datacenter = datacenter
-		}
-
-		client, err := api.NewClient(c)
-		if err != nil {
-			return nil, fmt.Errorf("consul 客户端初始化失败: %+v", err)
-		}
-
-		fl.consulClient = client
-		fl.consulPath = parts[1]
-	}
-
 	if err := fl.initialize(); err != nil {
 		return nil, err
 	}
@@ -129,56 +81,30 @@ func (f *FileLoader) initialize() error {
 			return err
 		}
 	}
-	sha256hex, pfHash, err := f.configSHA256()
+	configData, err := f.source.Load(context.Background(), f.confKey)
 	if err != nil {
 		return err
 	}
-	f.confSHA256 = sha256hex
-	logger.Infof("the initial config file sha256: %s", sha256hex)
+	if _, err := f.decodeConfig(configData); err != nil {
+		return fmt.Errorf("decode initial config from %s: %w", f.source.Name(), err)
+	}
+	f.configData = append([]byte(nil), configData...)
+	f.confSHA256 = sha256sum(configData)
+	logger.Infof("the initial config sha256: %s", f.confSHA256)
+
+	pfHash, err := f.priorityConfigSHA256()
+	if err != nil {
+		return err
+	}
 	f.priorityConfigHash = pfHash
 	logger.Infof("the initial priority config file sha256 map: %+v", f.priorityConfigHash)
 
-	// 开启一个协程 监听配置文件变化
-	watchCtx, cancel := context.WithCancel(context.Background())
-	f.watchCancel = cancel
-	go f.watchproc(watchCtx)
 	return nil
 }
 
 func sha256sum(in []byte) string {
 	sum := sha256.Sum256(in)
 	return hex.EncodeToString(sum[:])
-}
-
-// 获取配置 hash，根据计算的 hash ，判断配置文件是否发生修改
-func (f *FileLoader) configSHA256() (string, map[string]string, error) {
-	var configData []byte
-	var err error
-
-	if f.consulClient != nil {
-		// 从Consul获取配置
-		kv, _, err := f.consulClient.KV().Get(f.consulPath, nil)
-		if err != nil {
-			return "", nil, err
-		}
-		if kv == nil {
-			return "", nil, fmt.Errorf("consul config not found at path %s", f.consulPath)
-		}
-		configData = kv.Value
-	} else {
-		// 读取本地文件
-		configData, err = os.ReadFile(f.confPath)
-		if err != nil {
-			return "", nil, err
-		}
-	}
-
-	hash := sha256sum(configData)
-	phHash, err := f.priorityConfigSHA256()
-	if err != nil {
-		logger.Warnf("failed to get priority config sha256: %+v", err)
-	}
-	return hash, phHash, nil
 }
 
 func (f *FileLoader) priorityConfigSHA256() (map[string]string, error) {
@@ -206,31 +132,15 @@ func (f *FileLoader) priorityConfigSHA256() (map[string]string, error) {
 	return out, nil
 }
 
-// Load 加载配置文件内容反序列化到结构体
+// Load parses the last known-good configuration snapshot.
 func (f *FileLoader) Load(_ context.Context) (*configv1.Gateway, error) {
-	logger.Infof("loading config from: %s", f.confPath)
+	f.lock.RLock()
+	configData := append([]byte(nil), f.configData...)
+	f.lock.RUnlock()
+	return f.decodeConfig(configData)
+}
 
-	var configData []byte
-	var err error
-
-	if f.consulClient != nil {
-		// 从Consul获取配置
-		kv, _, err := f.consulClient.KV().Get(f.consulPath, nil)
-		if err != nil {
-			return nil, err
-		}
-		if kv == nil {
-			return nil, fmt.Errorf("consul config not found at path %s", f.consulPath)
-		}
-		configData = kv.Value
-	} else {
-		// 读取本地文件
-		configData, err = os.ReadFile(f.confPath)
-		if err != nil {
-			return nil, err
-		}
-	}
-
+func (f *FileLoader) decodeConfig(configData []byte) (*configv1.Gateway, error) {
 	jsonData, err := yaml.YAMLToJSON(configData)
 	if err != nil {
 		return nil, err
@@ -243,14 +153,45 @@ func (f *FileLoader) Load(_ context.Context) (*configv1.Gateway, error) {
 		logger.Warnf("failed to merge priority config: %+v", err)
 	}
 
-	// 注入环境变量
-	for k, v := range out.Envs {
-		if err := os.Setenv(k, v); err != nil {
-			logger.Warnf("Failed to set env %s: %v", k, err)
+	return out, nil
+}
+
+type envValue struct {
+	value  string
+	exists bool
+}
+
+func applyEnvs(config *configv1.Gateway) (func() error, error) {
+	previous := make(map[string]envValue, len(config.Envs))
+	rollback := func() error {
+		var rollbackErr error
+		for key, old := range previous {
+			var err error
+			if old.exists {
+				err = os.Setenv(key, old.value)
+			} else {
+				err = os.Unsetenv(key)
+			}
+			if err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore env %s: %w", key, err))
+			}
 		}
+		return rollbackErr
 	}
 
-	return out, nil
+	keys := make([]string, 0, len(config.Envs))
+	for key := range config.Envs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		oldValue, existed := os.LookupEnv(key)
+		if err := os.Setenv(key, config.Envs[key]); err != nil {
+			return nil, errors.Join(fmt.Errorf("set env %s: %w", key, err), rollback())
+		}
+		previous[key] = envValue{value: oldValue, exists: existed}
+	}
+	return rollback, nil
 }
 
 // join priorityDir 文件夹下所有配置，然后将所有配置合并到 conf path 输出的结构体中，覆盖源配置
@@ -324,103 +265,184 @@ func MakeReplaceOrPrependEndpointFn(origin []*configv1.Endpoint) func([]*configv
 func (f *FileLoader) Watch(fn OnChange) {
 	logger.Info("add config file change event handler")
 	f.lock.Lock()
-	defer f.lock.Unlock()
+	if f.closed {
+		f.lock.Unlock()
+		logger.Warn("ignore config file change event handler after loader close")
+		return
+	}
 	f.onChangeHandlers = append(f.onChangeHandlers, fn)
+	if f.watchCancel != nil {
+		f.lock.Unlock()
+		return
+	}
+
+	watchCtx, cancel := context.WithCancel(context.Background())
+	f.watchCancel = cancel
+	f.lock.Unlock()
+
+	// Start only after the first handler is visible. Otherwise a remote update
+	// can advance the snapshot before the proxy has registered its applier.
+	if f.source.Name() == "file" {
+		go f.watchLocal(watchCtx)
+		return
+	}
+	go f.watchSource(watchCtx)
+	if f.priorityDirectory != "" {
+		go f.watchPriority(watchCtx)
+	}
 }
 
 // 执行配置文件变更事件处理器
-func (f *FileLoader) executeLoader() error {
+func (f *FileLoader) executeLoader(configData []byte, priorityHash map[string]string) error {
+	f.applyLock.Lock()
+	defer f.applyLock.Unlock()
+
 	logger.Info("execute config loader")
+	config, err := f.decodeConfig(configData)
+	if err != nil {
+		return err
+	}
+
 	f.lock.RLock()
-	defer f.lock.RUnlock()
+	handlers := append([]OnChange(nil), f.onChangeHandlers...)
+	f.lock.RUnlock()
 
 	var chainedError error
-	for _, fn := range f.onChangeHandlers {
-		if err := fn(); err != nil {
+	rollbackEnvs, err := applyEnvs(config)
+	if err != nil {
+		return err
+	}
+	for _, fn := range handlers {
+		if err := fn(config); err != nil {
 			logger.Errorf("execute config loader error on handler: %+v: %+v", fn, err)
-			chainedError = errors.New(err.Error())
+			chainedError = errors.Join(chainedError, err)
 		}
 	}
-	return chainedError
+	if chainedError != nil {
+		return errors.Join(chainedError, rollbackEnvs())
+	}
+
+	f.lock.Lock()
+	f.configData = append([]byte(nil), configData...)
+	f.confSHA256 = sha256sum(configData)
+	f.priorityConfigHash = cloneHash(priorityHash)
+	f.lock.Unlock()
+	return nil
 }
 
-// 配置文件变更观察者 通过比对配置文件的 hash 值，判断配置文件是否发生变更
-func (f *FileLoader) watchproc(ctx context.Context) {
-	logger.Info("start watch config file")
-	var lastIndex uint64
-
+func (f *FileLoader) watchLocal(ctx context.Context) {
+	logger.Info("start watching local gateway config")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Second * 5):
+		case <-ticker.C:
 		}
 
-		func() {
-			if f.consulClient != nil {
-				// 检查优先级目录的哈希
-				currentPriorityHash, err := f.priorityConfigSHA256()
-				if err != nil {
-					logger.Errorf("failed to get priority config hash: %v", err)
-					return
-				}
-				priorityChanged := !reflect.DeepEqual(currentPriorityHash, f.priorityConfigHash)
-
-				// 使用阻塞查询监听Consul配置变化
-				kv, meta, err := f.consulClient.KV().Get(f.consulPath, &api.QueryOptions{
-					WaitIndex: lastIndex,
-				})
-				if err != nil {
-					logger.Errorf("watch consul config error: %+v", err)
-					return
-				}
-				if kv == nil {
-					logger.Errorf("consul config not found at path %s", f.consulPath)
-					return
-				}
-
-				newHash := sha256sum(kv.Value)
-				consulChanged := meta.LastIndex != lastIndex || newHash != f.confSHA256
-
-				if consulChanged || priorityChanged {
-					logger.Infof("config changed (consul: %v, priority: %v), reloading...", consulChanged, priorityChanged)
-					if err := f.executeLoader(); err != nil {
-						logger.Errorf("execute config loader error: %v", err)
-						return
-					}
-					// 更新索引和哈希
-					lastIndex = meta.LastIndex
-					f.confSHA256 = newHash
-					f.priorityConfigHash = currentPriorityHash
-				}
-			} else {
-				// 原本地文件监听逻辑
-				sha256hex, pfHash, err := f.configSHA256()
-				if err != nil {
-					logger.Errorf("watch config file error: %+v", err)
-					return
-				}
-				if sha256hex != f.confSHA256 || !reflect.DeepEqual(pfHash, f.priorityConfigHash) {
-					logger.Infof("config file changed, reload config, last sha256: %s, new sha256: %s, last pfHash: %+v, new pfHash: %+v", f.confSHA256, sha256hex, f.priorityConfigHash, pfHash)
-					if err := f.executeLoader(); err != nil {
-						logger.Errorf("execute config loader error with new sha256: %s: %+v", sha256hex, err)
-						return
-					}
-					f.confSHA256 = sha256hex
-					f.priorityConfigHash = pfHash
-				}
-			}
-		}()
+		configData, err := f.source.Load(ctx, f.confKey)
+		if err != nil {
+			logger.Errorf("watch local config: %v", err)
+			continue
+		}
+		priorityHash, err := f.priorityConfigSHA256()
+		if err != nil {
+			logger.Errorf("watch priority config: %v", err)
+			continue
+		}
+		if !f.changed(configData, priorityHash) {
+			continue
+		}
+		if err := f.executeLoader(configData, priorityHash); err != nil {
+			logger.Errorf("reload local config: %v", err)
+		}
 	}
+}
+
+func (f *FileLoader) watchSource(ctx context.Context) {
+	logger.Infof("start watching gateway config from %s", f.source.Name())
+	err := f.source.Watch(ctx, f.confKey, func(event loader.Event) {
+		switch {
+		case event.Err != nil:
+			logger.Errorf("gateway config watch: %v", event.Err)
+		case event.Deleted:
+			logger.Errorf("gateway config key %q was deleted; retaining last known-good config", f.confKey)
+		default:
+			priorityHash, err := f.priorityConfigSHA256()
+			if err != nil {
+				logger.Errorf("read priority config during gateway update: %v", err)
+				return
+			}
+			if !f.changed(event.Value, priorityHash) {
+				return
+			}
+			if err := f.executeLoader(event.Value, priorityHash); err != nil {
+				logger.Errorf("apply gateway config update: %v", err)
+			}
+		}
+	})
+	if err != nil && !errors.Is(err, loader.ErrUnsupportedWatch) && ctx.Err() == nil {
+		logger.Errorf("gateway config watch exited: %v", err)
+	}
+}
+
+func (f *FileLoader) watchPriority(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		priorityHash, err := f.priorityConfigSHA256()
+		if err != nil {
+			logger.Errorf("watch priority config: %v", err)
+			continue
+		}
+		f.lock.RLock()
+		configData := append([]byte(nil), f.configData...)
+		priorityChanged := !reflect.DeepEqual(priorityHash, f.priorityConfigHash)
+		f.lock.RUnlock()
+		if priorityChanged {
+			if err := f.executeLoader(configData, priorityHash); err != nil {
+				logger.Errorf("apply priority config update: %v", err)
+			}
+		}
+	}
+}
+
+func (f *FileLoader) changed(configData []byte, priorityHash map[string]string) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	return sha256sum(configData) != f.confSHA256 || !reflect.DeepEqual(priorityHash, f.priorityConfigHash)
+}
+
+func cloneHash(src map[string]string) map[string]string {
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 // Close 关闭配置文件加载
 func (f *FileLoader) Close() {
-	f.watchCancel()
+	f.lock.Lock()
+	f.closed = true
+	cancel := f.watchCancel
+	f.watchCancel = nil
+	f.lock.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 type InspectFileLoader struct {
-	ConfPath           string            `json:"confPath"`
+	Source             string            `json:"source"`
+	ConfigKey          string            `json:"configKey"`
 	ConfSHA256         string            `json:"confSha256"`
 	PriorityConfigHash map[string]string `json:"priorityConfigHash"`
 	OnChangeHandlers   int64             `json:"onChangeHandlers"`
@@ -430,12 +452,15 @@ type InspectFileLoader struct {
 func (f *FileLoader) DebugHandler() http.Handler {
 	debugMux := http.NewServeMux()
 	debugMux.HandleFunc("/debug/config/inspect", func(rw http.ResponseWriter, r *http.Request) {
+		f.lock.RLock()
 		out := &InspectFileLoader{
-			ConfPath:           f.confPath,
+			Source:             f.source.Name(),
+			ConfigKey:          f.confKey,
 			ConfSHA256:         f.confSHA256,
-			PriorityConfigHash: f.priorityConfigHash,
+			PriorityConfigHash: cloneHash(f.priorityConfigHash),
 			OnChangeHandlers:   int64(len(f.onChangeHandlers)),
 		}
+		f.lock.RUnlock()
 		rw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(rw).Encode(out)
 	})

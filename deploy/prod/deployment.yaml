@@ -15,6 +15,12 @@ spec:
       labels:
         app: ecommerce-gateway
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: ecommerce-gateway
           image: harbor.apikv.com:5443/ecommerce/gateway:latest
@@ -22,13 +28,24 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
+          env:
+            - name: SERVICE_NAME
+              value: ecommerce-gateway
+            - name: SERVICE_VERSION
+              value: v1
+            - name: CONFIG_SOURCE_FILE
+              value: /etc/ecommerce/config-source/gateway.yaml
           envFrom:
             - configMapRef:
                 name: ecommerce-gateway-config
-          command:
-            - "/app/gateway"
-          args:
-            - "-conf"
-            - "/app/configs/config.yaml"
+          volumeMounts:
+            - name: config-source
+              mountPath: /etc/ecommerce/config-source
+              readOnly: true
+      volumes:
+        - name: config-source
+          secret:
+            secretName: ecommerce-config-source-prod
+            defaultMode: 0400
       restartPolicy: Always
       
