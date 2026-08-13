@@ -79,12 +79,13 @@
 - 支持 Redis 策略缓存（可扩展）
 - 与 Casdoor 角色系统集成
 - 支持路径参数匹配和通配符规则
-- 策略和模型支持 Consul 配置中心热更新
+- 策略和模型支持 Config Center 热更新
 - 本地缓存加速权限验证
 
 ### 🔌 可插拔的中间件系统
 
-支持的中间件：
+支持的中间件（11 个，链顺序以 `configs/config.yaml` 为准）：
+- **IP** - 客户端真实 IP 提取（链路第一层）
 - **CORS** - 跨域资源共享
 - **JWT** - JWT 令牌验证
 - **RBAC** - 基于角色的访问控制
@@ -120,11 +121,11 @@ HTTP 客户端 (Client)
 
 ### 🔄 配置热更新
 
-- 支持从 Consul 配置中心动态加载配置
-- 支持本地文件系统配置热更新
+- 支持从独立 Config Center 动态加载配置
+- 显式本地文件模式支持路由配置轮询
 - 路由规则、中间件配置零重启更新
 - JWT 公钥、RBAC 策略文件自动重新加载
-- 配置优先级：优先级目录 > Consul > 默认配置
+- 配置优先级：本地优先级目录覆盖 Config Center 路由配置
 
 ### 📊 可观测性
 
@@ -142,162 +143,21 @@ HTTP 客户端 (Client)
 - TLS 配置热更新
 - 支持同时监听 TCP 和 UDP 端口
 
-## 架构设计
+## 架构与配置（指针）
 
-### 核心组件
+本章原有的「架构设计」「配置说明」与 `README.md`、交互式架构图重复且已漂移（中间件链顺序写错、
+路径过时），2026-08-13 删除。现行入口：
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      API 网关 (Gateway)                         │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │                    HTTP 服务器 (Server)                    │ │
-│  │   ┌───────────────────────────────────────────────────┐   │ │
-│  │   │               Kratos HTTP Server                  │   │ │
-│  │   │  (HTTP/1.1, HTTP/2, HTTP/3, TLS)                 │   │ │
-│  │   └───────────────────────────────────────────────────┘   │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │                    路由器 (Router)                         │ │
-│  │              [Mux 路由匹配]                               │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │                  中间件链 (Middleware)                      │ │
-│  │  CORS → JWT → RBAC → Logging → Tracing → ...            │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │                   代理引擎 (Proxy)                         │ │
-│  │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐ │ │
-│  │  │  负载均衡器   │→  │  HTTP 客户端   │→  │  重试管理器   │ │ │
-│  │  └──────────────┘   └──────────────┘   └──────────────┘ │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │                服务发现 (Discovery)                        │ │
-│  │              ┌─────────────────────────┐                  │ │
-│  │              │   Consul Registry       │                  │ │
-│  │              └─────────────────────────┘                  │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │                配置系统 (Config)                          │ │
-│  │  Consul Loader → Priority Dir → Local File               │ │
-│  └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-                                ↓
-              ┌───────────────────────────────────┐
-              │      后端微服务集群                │
-              │  (User, Product, Order, etc.)    │
-              └───────────────────────────────────┘
-```
-
-### 请求处理完整流程
-
-**实现文件**：[cmd/gateway/main.go](./cmd/gateway/main.go)
-
-1. **接收请求**：Kratos 服务器接收 HTTP/2 请求
-2. **路由匹配**：Mux 路由器根据路径匹配端点配置
-3. **中间件处理**：依次执行配置的中间件链
-4. **服务选择**：通过服务发现选择后端实例
-5. **请求转发**：HTTP 客户端转发请求到后端
-6. **重试机制**：失败时根据策略自动重试
-7. **响应处理**：处理后端响应并返回给客户端
-
-## 配置说明
-
-### 基础配置
-
-```yaml
-name: gateway
-version: v1.4.0
-
-envs:
-  # 服务发现配置
-  CONSUL_ADDR: consul://localhost:8500
-  DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
-  # 日志级别
-  LOG_LEVEL: debug
-  # Casdoor 配置
-  OWNER: auth
-  CASDOOR_URL: https://casdoor.example.com:8081
-  # TLS 配置
-  USE_TLS: "false"
-  USE_HTTP3: "false"
-  HTTP_PORT: ":8080"
-  HTTP3_PORT: ":443"
-  CRT_FILE_PATH: configs/tls/gateway.crt
-  KEY_FILE_PATH: configs/tls/gateway.key
-  # JWT 配置
-  JWT_PUBKEY_PATH: configs/secrets/public.pem
-  # RBAC 配置
-  MODEL_FILE_PATH: configs/rbac/model.conf
-  POLICIES_FILE_PATH: configs/rbac/policies.csv
-```
-
-### 端点配置
-
-```yaml
-endpoints:
-  - path: /user*
-    protocol: GRPC
-    backends:
-      - target: 'discovery:///user-identity-v1'
-    timeout: 4s
-    retry:
-      attempts: 2
-      perTryTimeout: 2s
-      conditions:
-        - byStatusCode: '502-504'
-        - byHeader:
-            name: 'Grpc-Status'
-            value: '14'
-
-  - path: /product*
-    protocol: GRPC
-    backends:
-      - target: 'direct://localhost:30003'
-```
-
-### 中间件配置
-
-```yaml
-middlewares:
-  - name: ip
-  - name: cors
-    options:
-      '@type': type.googleapis.com/gateway.middleware.cors.v1.Cors
-      allowCredentials: true
-      allowHeaders:
-        - Authorization
-        - Content-Type
-      allowOrigins:
-        - http://localhost:3000
-  - name: logging
-  - name: tracing
-    options:
-      '@type': type.googleapis.com/gateway.middleware.tracing.v1.Tracing
-      httpEndpoint: otel-collector:4318
-      insecure: true
-  - name: jwt
-    router_filter:
-      rules:
-        - path: /user/user.v1.UserService/SignIn
-          methods:
-            - POST
-            - OPTIONS
-  - name: rbac
-    router_filter:
-      rules:
-        - path: /product*
-          methods:
-            - GET
-            - OPTIONS
-```
+- 架构与 9 层中间件链实际顺序：根仓 `docs/architecture/ecommerce-gateway.html`（交互式架构图）
+  + [docs/REQUEST_FLOW.md](docs/REQUEST_FLOW.md)（带代码锚点的文字版全链路）
+- 配置说明与环境变量表：[README.md](README.md)；实际配置以 [configs/config.yaml](configs/config.yaml) 为准
 
 ## 与 Traefik 的对比
 
 | 特性 | 自建网关 | Traefik |
 |------|---------|---------|
 | **诞生目的** | 专门为电商微服务设计的定制化网关 | 通用型云原生反向代理和负载均衡器 |
-| **配置方式** | YAML + Consul KV，支持深度定制 | 声明式配置，多种提供商支持 |
+| **配置方式** | YAML + Config Center Watch，支持深度定制 | 声明式配置，多种提供商支持 |
 | **JWT 认证** | 内置、与 Casdoor 深度集成、公钥热更新 | 通过插件支持，但需要额外配置 |
 | **RBAC 权限** | 内置 Casbin + Redis，与 Casdoor 角色联动 | 需要通过插件或自定义中间件实现 |
 | **服务发现** | Consul 深度集成、健康检查联动 | 支持多种服务发现 (K8s, Consul, etcd) |
@@ -311,72 +171,19 @@ middlewares:
 
 ### 为什么选择自建网关而不是 Traefik？
 
-1. **深度集成需求**：与现有 Casdoor、Consul 配置中心深度集成的需求
+1. **深度集成需求**：与现有 Casdoor、Config Center、Consul 服务发现深度集成
 2. **定制化认证逻辑**：需要实现特定的 JWT + RBAC 认证流程
 3. **电商业务特性**：针对电商场景的特殊路由规则和鉴权需求
 4. **配置热更新**：需要更细粒度的配置热更新控制
 5. **团队技术栈**：后端团队主要使用 Go，便于维护和扩展
 6. **协议转换需求**：HTTP ↔ gRPC 协议转换的深度定制
 
-## 快速开始
+## 运行
 
-### 前置要求
-
-- Go 1.21+
-- Consul 服务发现
-- (可选) Casdoor 用户认证系统
-- (可选) Redis 缓存
-
-### 本地开发
-
-```bash
-# 克隆项目
-cd gateway
-
-# 安装依赖
-go mod download
-
-# 复制示例配置
-cp configs/config.yaml.example configs/config.yaml
-
-# 编辑配置，设置 Consul 地址等
-vim configs/config.yaml
-
-# 启动服务
-make dev
-```
-
-### Docker 部署
-
-```bash
-# 构建镜像
-make docker-build
-
-# 或使用现成的 Docker Compose
-docker-compose -f deploy/dev/docker-compose.yml up
-```
-
-### 配置 Consul
-
-1. 将配置文件上传到 Consul KV 的路径 `ecommerce/gateway/config.yaml`
-2. 将 JWT 公钥上传到 `ecommerce/gateway/secrets/public.pem`
-3. 将 RBAC 策略文件上传到 `ecommerce/gateway/rbac/policies.csv`
-
-### 测试网关
-
-```bash
-# 访问健康检查
-curl http://localhost:8080/healthz
-
-# 测试认证接口
-curl -X POST http://localhost:8080/user/user.v1.UserService/SignIn \
-  -H "Content-Type: application/json" \
-  -d '{"username":"test","password":"test"}'
-
-# 测试需要认证的接口
-curl -X GET http://localhost:8080/user/user.v1.UserService/GetProfile \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-```
+见 [README.md](README.md) 环境变量表与根仓 README「运行 · 网关」。
+（原「快速开始」章 2026-08-13 删除：`configs/config.yaml.example`、`make docker-build`、
+`deploy/dev/docker-compose.yml`、`curl /healthz` 均不存在——网关自身不暴露 healthz，
+`/healthz` 只是网关探测后端的路径。前置要求同根仓：Go 1.26+、Consul。）
 
 ## 项目结构
 
@@ -394,15 +201,18 @@ gateway/
 │   └── consul/
 ├── examples/              # 示例代码
 ├── infrastructure/        # 基础设施
-├── middleware/            # 中间件
+├── middleware/            # 中间件（11 个）
 │   ├── bbr/              # 流量控制
 │   ├── circuitbreaker/   # 熔断器
 │   ├── cors/             # 跨域
+│   ├── ip/               # 客户端真实 IP（链路第一层）
 │   ├── jwt/              # JWT 认证
 │   ├── logging/          # 日志
 │   ├── rbac/             # 权限控制
+│   ├── rewrite/          # 路径改写
 │   ├── routerfilter/     # 路由过滤
-│   └── tracing/          # 链路追踪
+│   ├── tracing/          # 链路追踪
+│   └── transcoder/       # 协议转换
 ├── pkg/                  # 工具包
 ├── proxy/                # 代理核心
 ├── router/               # 路由器

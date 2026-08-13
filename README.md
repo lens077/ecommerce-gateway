@@ -6,6 +6,9 @@ HTTP -> Proxy -> Router -> Middleware -> Client -> Selector -> Node
 
 > 本目录基于 go-kratos/gateway 二次开发（上方 badge 与 `go.mod` module 名仍为上游身份），
 > 通过 `git subtree` 同步到独立仓库 [lens077/ecommerce-gateway](https://github.com/lens077/ecommerce-gateway)。
+>
+> 网关自身配置由独立 Config Center 下发，Consul 只负责服务发现。正常启动必须通过
+> `CONFIG_SOURCE_FILE` 指向本地 selector；selector 中的机器 token 不入库。
 
 ## 文档导航
 
@@ -13,9 +16,10 @@ HTTP -> Proxy -> Router -> Middleware -> Client -> Selector -> Node
 |---|---|
 | 本文件 | 运行配置参考：通信模式、环境变量、TLS、中间件、JWT/RBAC |
 | [README-CUSTOM.md](README-CUSTOM.md) | 设计叙事：为什么自建网关、架构与核心特性、与 Traefik 对比 |
-| [README-HealthCheck.md](README-HealthCheck.md) | 主动健康检查专题（部分结论已被 `context/project/ecommerce/gateway/` 的踩坑记录修正） |
+| （已删除）README-HealthCheck.md | 健康检查专题文档已删：示例编译不过、「智能节点过滤」结论被实测推翻。现行真相源：根仓 `context/project/ecommerce/gateway/experience/retry-amplification-and-phantom-health-check.md` |
 | [docs/ARCHITECTURE_EVOLUTION.md](docs/ARCHITECTURE_EVOLUTION.md) | 演进规划（Cilium 边缘网关 + 本网关转 BFF），**纯规划未落地** |
-| [docs/notes/](docs/notes/) | kratos gateway 源码阅读笔记（note.md、请求流程.md） |
+| [docs/REQUEST_FLOW.md](docs/REQUEST_FLOW.md) | 本仓网关一次请求的全链路文字版（带代码锚点，与交互式架构图互补） |
+| [docs/notes/note.md](docs/notes/note.md) | 上游 kratos gateway 源码阅读笔记（不含本仓改造） |
 
 ## 推送
 - 推送到 gateway 单独仓库 ： `git subtree push --prefix=gateway gateway main`
@@ -39,19 +43,16 @@ HTTP -> Proxy -> Router -> Middleware -> Client -> Selector -> Node
 当你选择使用服务发现模式时, url的格式是: `/<path>/<service>/<method>`, path是在网关配置文件编写的`endpoints`.`path`, 例如`/product*`,那么它的url就是: `http://localhost:8080/product/product.v1.ProductService/GetProductDetail` 
 当你使用直连模式时, url的格式是: `/<service>/<method>`
 
-配置:
+配置（Config Center 的 `gateway/<env>/config.yaml`）：
 ```yml
-# 此文件用于配置网关, 项目从consul中读取服务配置, 与该配置文件进行合并
 # 优先级目录合并：在优先级目录中添加或修改配置文件，观察是否生效
-# 配置热更新：修改Consul中的配置或本地优先级目录的配置，确认应用能动态加载新配置
+# 配置热更新：修改 Config Center 或本地优先级目录的配置，确认应用能动态加载新配置
 name: gateway
 version: v1.4.0
 # 环境变量
 envs:
   # 服务发现
   CONSUL_ADDR: consul://localhost:8500
-  # 服务发现配置路径
-  DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
   # 输出的日志等级
   LOG_LEVEL: debug
   # 组织
@@ -75,9 +76,9 @@ envs:
   JWT_PUBKEY_PATH: configs/secrets/public.pem
 
   # RBAC模型文件路径
-  MODEL_FILE_PATH: configs/rbac/model.conf
+  MODEL_FILE_PATH: configs/policies/model.conf
   # RBAC策略文件路径
-  POLICIES_FILE_PATH: configs/rbac/policies.csv
+  POLICIES_FILE_PATH: configs/policies/policies.csv
 
 middlewares:
   - name: ip
@@ -119,7 +120,7 @@ middlewares:
     # 无需认证的接口
     router_filter:
       rules:
-        - path: /search/search.v1.SearchService/Search
+        - path: /search.v1.SearchService/Search
           methods:
             - POST
             - OPTIONS
@@ -137,7 +138,7 @@ middlewares:
     # 不需要鉴权的接口
     router_filter:
       rules:
-        - path: /search/search.v1.SearchService/Search
+        - path: /search.v1.SearchService/Search
           methods:
             - POST
             - OPTIONS
@@ -160,7 +161,7 @@ endpoints:
     #          stripPrefix: /user
     backends:
       #- target: 'direct://localhost:30001' # 直连模式
-      - target: 'discovery:///user-identity-v1' # 服务发现模式
+      - target: 'discovery:///user-identity' # 服务发现模式
     timeout: 4s
     retry:
       attempts: 2
@@ -176,7 +177,7 @@ endpoints:
     #          stripPrefix: /user
     backends:
       #- target: 'direct://localhost:30002'
-      - target: 'discovery:///search-product-v1'
+      - target: 'discovery:///search-product'
     timeout: 4s
     retry:
       attempts: 2
@@ -190,7 +191,7 @@ endpoints:
   - path: /product*
     protocol: GRPC
     backends:
-      - target: 'direct://localhost:30003'
+      - target: 'discovery:///product-service'
       #- target: 'discovery:///product-core-v1'
     timeout: 4s
     retry:
@@ -212,9 +213,10 @@ endpoints:
 | 环境变量 | 说明 | 默认值 | 示例 |
 | :--- | :--- | :--- | :--- |
 | `OWNER` | 用户组织标识 | - | `org-ecommerce` |
+| `CONFIG_SOURCE_FILE` | 本地 Config Center selector | 必填 | `/etc/ecommerce/config-source/gateway.yaml` |
+| `CONFIG_SOURCE` | 显式本地测试模式 | - | `file` |
+| `CONFIG_FILE` | `CONFIG_SOURCE=file` 时的主配置路径 | - | `configs/config.yaml` |
 | `CONSUL_ADDR` | Consul 服务发现地址 | `consul://localhost:8500` | `consul://consul.sumery.com:443` |
-| `CONSUL_CONFIG_PREFIX` | Consul 配置文件前缀 | - | `ecommerce/gateway` |
-| `CONSUL_CONFIG_PATH` | Consul 配置文件路径 | `config.yaml` | `ecommerce/gateway/config.yaml` |
 | `CONSUL_SCHEME` | Consul 连接协议 | 根据端口自动判断 | `http` 或 `https` |
 | `CONSUL_INSECURE_SKIP_VERIFY` | 是否跳过 TLS 证书验证 | `true`（HTTPS时） | `true` 或 `false` |
 | `CONSUL_TOKEN` | Consul ACL Token | - | `my-consul-token` |
@@ -228,8 +230,8 @@ endpoints:
 | `TLS_DIR` | TLS 证书目录 | `configs/tls` | `configs/tls` |
 | `CRT_FILE_PATH` | TLS 证书文件路径 | `configs/tls/gateway.crt` | `configs/tls/gateway.crt` |
 | `KEY_FILE_PATH` | TLS 密钥文件路径 | `configs/tls/gateway.key` | `configs/tls/gateway.key` |
-| `POLICIES_FILE_PATH` | RBAC 策略文件路径 | `configs/rbac/policies.csv` | `configs/rbac/policies.csv` |
-| `MODEL_FILE_PATH` | RBAC 模型文件路径 | `configs/rbac/model.conf` | `configs/rbac/model.conf` |
+| `POLICIES_FILE_PATH` | RBAC 策略文件路径 | `configs/policies/policies.csv` | `configs/policies/policies.csv` |
+| `MODEL_FILE_PATH` | RBAC 模型文件路径 | `configs/policies/model.conf` | `configs/policies/model.conf` |
 | `CASDOOR_URL` | Casdoor 认证服务地址 | - | `https://casdoor.sumery.com` |
 | `Debug` | 是否启用调试模式 | `false` | `true` 或 `false` |
 | `SERVICE_NAME` | 服务名称 | - | `gateway` |
@@ -239,16 +241,17 @@ endpoints:
 | `SERVICE_TAGS` | 服务标签 | - | `production,gateway` |
 | `PROXY_READ_HEADER_TIMEOUT` | 代理读取请求头超时时间 | `10s` | `15s` |
 | `PROXY_READ_TIMEOUT` | 代理读取超时时间 | `15s` | `20s` |
-| `PROXY_WRITE_TIMEOUTT` | 代理写入超时时间 | `15s` | `20s` |
+|  `PROXY_WRITE_TIMEOUTT`（**env 名就是三个 T**，代码 `constants/env.go:60` 的 typo 已固化，两个 T 设置无效） | 代理写入超时时间 | `15s` | `20s` |
 | `PROXY_IDLE_TIMEOUT` | 代理连接空闲超时时间 | `120s` | `60s` |
 
-### 环境变量配置优先级
+### 配置加载顺序
 
-环境变量可以通过以下方式设置（优先级从高到低）：
+1. 进程先读取 `CONFIG_SOURCE_FILE`，解析 Config Center 地址、三元组与机器 token。
+2. 拉取 `config.yaml` 并注入其中的 `envs`，再初始化 Consul 服务发现与中间件。
+3. `PRIORITY_CONFIG` 目录只覆盖路由 endpoint；远端配置与该目录的有效更新都会热加载。
 
-1. **启动命令行参数**（如 `make dev` 中设置的环境变量）
-2. **Consul KV 配置**（通过 `envs` 字段注入）
-3. **系统环境变量**
+启动 selector 是自举边界，不能放进 Config Center。`CONFIG_SOURCE=file` + `CONFIG_FILE` 只供
+显式本地测试，不存在 Consul KV 回退。
 
 ### 配置文件示例
 
@@ -257,10 +260,7 @@ endpoints:
 ---
 
 ## TLS
-1. 开发测试时可以使用自签名证书, 生产需要使用真实的证书, 项目支持自签名证书的生成, 可以使用以下命令生成自签名证书:
-```bash
-make https
-```
+1. 开发测试时可以使用自签名证书（自行用 openssl / mkcert 生成后放入 `configs/tls/`）, 生产需要使用真实的证书.
 
 2. 创建TLS配置
 
@@ -270,14 +270,12 @@ make https
 - HTTP3_PORT: string, 告诉网关使用的端口, 使用UDP for HTTP/3, 例如: ":443", 当 TCP 和 UDP 端口重合时, 网关通过TLS的ALPN自动协商实现无缝回退
 - CRT_FILE_PATH: string, 告诉网关使用的证书文件路径, 例如: "dynamic-config/tls/gateway.crt", 开发时保持默认值即可, 生产环境时需要把证书替换并修改名为`gateway.crt`
 - KEY_FILE_PATH: string, 告诉网关使用的证书文件路径, 例如: "dynamic-config/tls/gateway.key", 开发时保持默认值即可, 生产环境时需要把证书替换并修改名为`gateway.key`
-最低可运行示例:
-修改`cmd/gateway/config.yaml` 然后复制到 Consul KV 中
+TLS 参数写入 Config Center 的 `gateway/<env>/config.yaml`；私钥文件通过本地或 Kubernetes
+Secret 挂载，不能写入 Config Center。最低配置示例：
 ```yaml
 envs:
   # 服务发现
   CONSUL_ADDR: consul://example.com:8500
-  # 服务发现配置路径
-  DISCOVERY_CONFIG_PATH: ecommerce/gateway/config.yaml
   # 是否使用 TLS, 为 true 则使用, 需要配置CRT_FILE_PATH和KEY_FILE_PATH参数, 指定相对于入口文件(main.go)执行的路径
   USE_TLS: "true"
   USE_HTTP3: "true"
@@ -294,17 +292,21 @@ envs:
 ![img.png](img.png)
 
 # Middleware
+
+实际注册的 11 个中间件（`grep middleware.Register` 可验证；链顺序以 `configs/config.yaml` 为准，
+交互式架构图见根仓 `docs/architecture/ecommerce-gateway.html`）：
+
+* ip: 客户端真实 IP 提取（链路第一层）
 * cors
-* auth
-* color
 * logging
 * tracing
-* metrics
-* ratelimit
-* datacenter
-* jwt: 与casdoor集成
-* rbac: 与casdoor的集成, 使用到了redis来缓存casbin策略, 基于角色的接口的权限控制
-* router_filter: 路由过滤器, 用于过滤掉不需要的路由
+* transcoder: 协议转换
+* jwt: 与 casdoor 集成
+* rbac: casbin 策略（redis 缓存），基于角色的接口权限控制
+* router_filter: 路由过滤器, 用于过滤匿名放行路径
+* rewrite: 路径改写
+* bbr: 自适应限流
+* circuitbreaker: 熔断
 
 ### CORS
 
@@ -398,7 +400,7 @@ middlewares:
 
 ## JWT
 证书使用`x509`生成,4096位大小,加密算法是RS256(RSA+SHA256),有效期20年. 
-证书文件在`/cmd/gatway`目录下, 证书文件名为`public.pem`
+证书文件在 `configs/secrets/` 目录下, 文件名为 `public.pem`
 
 ## RBAC
 

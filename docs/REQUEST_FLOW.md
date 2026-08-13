@@ -1,19 +1,23 @@
 # Gateway 请求流程分析
 
+> 带代码锚点的本仓网关全链路文字版；交互式架构图见根仓 `docs/architecture/ecommerce-gateway.html`。
+> ⚠️ 文中 `#Lxx` 行号锚点按写作当日代码，会随提交漂移——以文件级链接 + 函数名为准，行号仅作参考。
+
 ## 一、启动流程
 
 ### 1. 配置加载
 
-**入口**: [cmd/gateway/main.go](../../cmd/gateway/main.go#L62-L73)
+**入口**: [cmd/gateway/main.go](../cmd/gateway/main.go#L62-L73)
 
 ```go
-// 创建配置加载器
-confLoader, err := config.NewFileLoader(proxyConfig, priorityConfigDir)
+// 先建配置源抽象（Consul / 文件由 loader 决定），再建加载器
+configSource, err := loader.NewSource()                                // main.go:62
+confLoader, err := config.NewSourceLoader(configSource, priorityConfigDir) // main.go:68
 // 加载配置
 bc, loadErr := confLoader.Load(context.Background())
 ```
 
-**配置加载器**: [config/config.go](../../config/config.go#L210-L254)
+**配置加载器**: [config/config.go](../config/config.go#L210-L254)
 - 支持从 Consul KV 或本地文件加载
 - YAML 转 JSON 解析
 - 合并优先级目录配置
@@ -21,24 +25,24 @@ bc, loadErr := confLoader.Load(context.Background())
 ### 2. 中间件初始化
 
 ```go
-// main.go 第 84-98 行
-jwt.Init()           // JWT 初始化：加载公钥、启动文件监听
-rbac.InitEnforcer()  // RBAC 初始化：加载 Casbin 策略、启动自动更新
-ip.Init()            // IP 白名单初始化
+// main.go:90-103
+jwtErr := jwt.Init(ctx, configSource)          // JWT 初始化：加载公钥、订阅配置源热更新，失败 Fatalf
+rbacErr := rbac.InitEnforcer(ctx, configSource) // RBAC 初始化：加载 Casbin 策略、订阅自动更新，失败 Fatalf
+ip.Init()                                       // IP 中间件初始化（仍无参）
 ```
 
 ### 3. 创建代理 (Proxy)
 
 ```go
-// main.go 第 101-107 行
-clientFactory := client.NewFactory(makeDiscovery())  // 创建客户端工厂(含健康检查)
-p, proxy.New(clientFactory, middleware.Create)      // 创建代理
-circuitbreaker.Init(clientFactory)                   // 初始化熔断器
+// main.go:106-112
+clientFactory := client.NewFactory(makeDiscovery())   // 创建客户端工厂(含健康检查)
+p, err := proxy.New(clientFactory, middleware.Create) // 创建代理
+circuitbreaker.Init(clientFactory)                    // 初始化熔断器
 ```
 
 ### 4. 更新路由配置
 
-**文件**: [proxy/proxy.go](../../proxy/proxy.go#L504-L547)
+**文件**: [proxy/proxy.go](../proxy/proxy.go#L401-L443)（`Proxy.Update`）
 
 ```go
 // 更新配置，构建所有端点的处理器
@@ -67,7 +71,7 @@ func (p *Proxy) Update(c *config.Gateway) error {
 
 ## 二、buildEndpoint 详解 - 构建端点处理器
 
-**文件**: [proxy/proxy.go](../../proxy/proxy.go#L304-L464)
+**文件**: [proxy/proxy.go](../proxy/proxy.go#L304-L464)
 
 ### Step 1: 创建客户端
 
@@ -76,7 +80,7 @@ func (p *Proxy) Update(c *config.Gateway) error {
 client, err := p.clientFactory(e)  // 根据 endpoint 配置创建客户端
 ```
 
-客户端工厂 ([client/factory.go](../../client/factory.go#L75-L127))：
+客户端工厂 ([client/factory.go](../client/factory.go#L75-L127))：
 
 ```go
 return func(endpoint *config.Endpoint) (Client, error) {
@@ -119,7 +123,7 @@ tripper, err = p.buildMiddleware(e.Middlewares, tripper)
 tripper, err = p.buildMiddleware(ms, tripper)
 ```
 
-**中间件链构建** ([proxy/proxy.go](../../proxy/proxy.go#L268-L282))：
+**中间件链构建** ([proxy/proxy.go](../proxy/proxy.go#L268-L282))：
 
 ```go
 func (p *Proxy) buildMiddleware(ms []*config.Middleware, next http.RoundTripper) (http.RoundTripper, error) {
@@ -132,7 +136,7 @@ func (p *Proxy) buildMiddleware(ms []*config.Middleware, next http.RoundTripper)
 }
 ```
 
-**中间件注册** ([middleware/registry.go](../../middleware/registry.go))：
+**中间件注册** ([middleware/registry.go](../middleware/registry.go))：
 
 ```go
 func Register(name string, factory Factory) {
@@ -199,7 +203,7 @@ Router.Match(/user/a) → 找到匹配的端点: /user*
 
 ## 四、负载均衡详解
 
-**文件**: [client/client.go](../../client/client.go#L71-L149)
+**文件**: [client/client.go](../client/client.go#L71-L149)
 
 ```go
 func (c *client) RoundTrip(req *http.Request) (resp *http.Response, err error) {
@@ -231,7 +235,7 @@ func (c *client) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 }
 ```
 
-**P2C 算法**: [selector/p2c](../../vendor/github.com/go-kratos/kratos/v2/selector/p2c/)
+**P2C 算法**: [selector/p2c](../vendor/github.com/go-kratos/kratos/v2/selector/p2c/)
 
 核心思想：随机选择两个节点，选择负载较小的那个。
 
@@ -239,7 +243,7 @@ func (c *client) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 
 ## 五、熔断器详解
 
-**文件**: [middleware/circuitbreaker/circuitbreaker.go](../../middleware/circuitbreaker/circuitbreaker.go#L159-L181)
+**文件**: [middleware/circuitbreaker/circuitbreaker.go](../middleware/circuitbreaker/circuitbreaker.go#L159-L181)
 
 ```go
 return middleware.NewWithCloser(func(next http.RoundTripper) http.RoundTripper {
@@ -279,7 +283,7 @@ return middleware.NewWithCloser(func(next http.RoundTripper) http.RoundTripper {
 
 ## 六、重试详解
 
-**文件**: [proxy/proxy.go](../../proxy/proxy.go#L379-L429)
+**文件**: [proxy/proxy.go](../proxy/proxy.go#L379-L429)
 
 ```go
 for i := 0; i < retryStrategy.attempts; i++ {
@@ -321,7 +325,7 @@ for i := 0; i < retryStrategy.attempts; i++ {
 }
 ```
 
-**重试条件** ([proxy/condition/condition.go](../../proxy/condition/condition.go))：
+**重试条件** ([proxy/condition/condition.go](../proxy/condition/condition.go))：
 
 ```go
 // 支持两种条件
@@ -335,7 +339,7 @@ for i := 0; i < retryStrategy.attempts; i++ {
 
 ## 七、限流详解
 
-**文件**: [middleware/bbr/bbr.go](../../middleware/bbr/bbr.go)
+**文件**: [middleware/bbr/bbr.go](../middleware/bbr/bbr.go)
 
 ```go
 func Middleware(c *config.Middleware) (middleware.Middleware, error) {
@@ -449,14 +453,14 @@ middlewares:
 
 | 功能 | 文件 |
 |------|------|
-| 入口 | [cmd/gateway/main.go](../../cmd/gateway/main.go) |
-| 代理核心 | [proxy/proxy.go](../../proxy/proxy.go) |
-| 客户端工厂 | [client/factory.go](../../client/factory.go) |
-| 客户端请求 | [client/client.go](../../client/client.go) |
-| 健康检查 | [client/health_checker.go](../../client/health_checker.go) |
-| 熔断器 | [middleware/circuitbreaker/circuitbreaker.go](../../middleware/circuitbreaker/circuitbreaker.go) |
-| 重试 | [proxy/retry.go](../../proxy/retry.go) |
-| 限流 | [middleware/bbr/bbr.go](../../middleware/bbr/bbr.go) |
-| 中间件注册 | [middleware/registry.go](../../middleware/registry.go) |
-| 路由 | [router/mux/mux.go](../../router/mux/mux.go) |
-| 配置加载 | [config/config.go](../../config/config.go) |
+| 入口 | [cmd/gateway/main.go](../cmd/gateway/main.go) |
+| 代理核心 | [proxy/proxy.go](../proxy/proxy.go) |
+| 客户端工厂 | [client/factory.go](../client/factory.go) |
+| 客户端请求 | [client/client.go](../client/client.go) |
+| 健康检查 | [client/health_checker.go](../client/health_checker.go) |
+| 熔断器 | [middleware/circuitbreaker/circuitbreaker.go](../middleware/circuitbreaker/circuitbreaker.go) |
+| 重试 | [proxy/retry.go](../proxy/retry.go) |
+| 限流 | [middleware/bbr/bbr.go](../middleware/bbr/bbr.go) |
+| 中间件注册 | [middleware/registry.go](../middleware/registry.go) |
+| 路由 | [router/mux/mux.go](../router/mux/mux.go) |
+| 配置加载 | [config/config.go](../config/config.go) |
