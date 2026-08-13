@@ -1,5 +1,5 @@
 # 定义基础镜像的 Golang 版本
-ARG GO_IMAGE=golang:1.26.5-alpine3.22
+ARG GO_IMAGE=golang:1.26.5-alpine3.24
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 WORKDIR /src
@@ -100,7 +100,7 @@ CMD ["/app/gateway"]
 #   --progress=plain \
 #   -t ecommerce/gateway:dev \
 #   --build-arg CGOENABLED=0 \
-#   --build-arg GO_IMAGE=golang:1.24.0 \
+#   --build-arg GO_IMAGE=golang:1.26.5-alpine3.24 \
 #   --build-arg GOOS=linux \
 #   --build-arg GOARCH=arm64 \
 #   --build-arg VERSION=dev \
@@ -117,7 +117,7 @@ CMD ["/app/gateway"]
 #   --progress=plain \
 #   -t $REPOSITORY:$VERSION \
 #   --build-arg CGOENABLED=0 \
-#   --build-arg GO_IMAGE=golang:1.24.0-alpine3.21 \
+#   --build-arg GO_IMAGE=golang:1.26.5-alpine3.24 \
 #   --build-arg VERSION=$VERSION \
 #   --build-arg GATEWAY_PORT=$GATEWAY_PORT \
 #   --platform $PLATFORM_1,$PLATFORM_2 \

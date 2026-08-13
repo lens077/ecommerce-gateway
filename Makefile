@@ -1,8 +1,9 @@
 API_PROTO_FILES=$(shell find api -name *.proto)
-REPOSITORY ?= ccr.ccs.tencentyun.com/sumery/ecommerce-gateway
+CCR_REPOSITORY ?= ccr.ccs.tencentyun.com/sumery/ecommerce-gateway
+GHCR_REPOSITORY ?= ghcr.io/lens077/ecommerce-gateway
 # 传给 Dockerfile 的 ARG 名是 GO_IMAGE(下划线),别写成 GOIMAGE —— 那样是空传,
 # 实际用的是 Dockerfile 的默认值。这里的值必须 >= go.mod 要求的 go 版本。
-GOIMAGE ?= golang:1.26.5-alpine3.22
+GOIMAGE ?= golang:1.26.5-alpine3.24
 VERSION ?= latest
 GATEWAY_PORT ?= 8080
 PLATFORM_1 ?= linux/amd64
@@ -46,11 +47,14 @@ k8s-dev:
 k8s-prod:
 	kubectl apply -f deploy/prod
 
-.PHONY: build
-build:
+.PHONY: build docker-push
+build: docker-push
+
+docker-push:
 	docker buildx build . \
       --progress=plain \
-      -t $(REPOSITORY):$(VERSION) \
+      -t $(GHCR_REPOSITORY):$(VERSION) \
+      -t $(CCR_REPOSITORY):$(VERSION) \
       --build-arg CGOENABLED=0 \
       --build-arg GO_IMAGE=$(GOIMAGE) \
       --build-arg VERSION=$(VERSION) \
