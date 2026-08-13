@@ -110,4 +110,34 @@ var (
 		ServiceUnavailable,
 		"服务暂时不可用，请稍后再试",
 	)
+
+	// 以下是网关自身（而非上游业务）产生的错误，统一走 Write 输出
+
+	// ErrRouteNotFound 没有匹配到任何路由
+	ErrRouteNotFound = errors.New(
+		http.StatusNotFound,
+		ReasonNotFound,
+		"请求的资源不存在",
+	)
+
+	// ErrMethodNotAllowed 路由存在但方法不匹配
+	ErrMethodNotAllowed = errors.New(
+		http.StatusMethodNotAllowed,
+		ReasonMethodNotAllowed,
+		"请求方法不被允许",
+	)
+
+	// ErrInternalServer 网关内部异常（如 panic）
+	ErrInternalServer = errors.New(
+		http.StatusInternalServerError,
+		InternalError,
+		"服务内部错误，请稍后重试",
+	)
+
+	// ErrBadGateway 网关无法从上游取得有效响应
+	ErrBadGateway = errors.New(
+		http.StatusBadGateway,
+		ReasonBadGateway,
+		"网关无法连接到后端服务",
+	)
 )

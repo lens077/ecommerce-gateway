@@ -1,5 +1,8 @@
 # kratos gateway 源码分析
 
+> 本文是**上游 go-kratos/gateway 原始结构**的源码阅读笔记，不含本仓改造
+> （jwt/rbac/ip/健康检查/Consul 配置源等均不在内）；本仓请求链路见 [../REQUEST_FLOW.md](../REQUEST_FLOW.md)。
+
 kratos 网关执行链路
 
     HTTP -> Proxy -> Router -> Middleware -> Client -> Selector -> Node

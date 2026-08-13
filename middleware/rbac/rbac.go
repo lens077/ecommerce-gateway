@@ -1,13 +1,13 @@
 package rbac
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +23,9 @@ import (
 	"github.com/go-kratos/gateway/middleware/routerfilter"
 	"github.com/go-kratos/gateway/pkg/loader"
 	"github.com/go-kratos/kratos/v2/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -38,7 +41,7 @@ var (
 )
 
 // InitEnforcer 初始化RBAC系统
-func InitEnforcer() error {
+func InitEnforcer(ctx context.Context, source loader.Source) error {
 	if initialized {
 		return nil
 	}
@@ -54,13 +57,7 @@ func InitEnforcer() error {
 		return initPathsErr
 	}
 
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("获取Consul加载器失败: %v", err)
-		return err
-	}
-
-	if err := syncEssentialFiles(load); err != nil {
+	if err := syncEssentialFiles(ctx, source); err != nil {
 		logger.Errorf("文件同步失败: %v", err)
 		return err
 	}
@@ -70,20 +67,20 @@ func InitEnforcer() error {
 		return err
 	}
 
-	setupWatchers(load)
+	setupWatchers(ctx, source)
 	middleware.Register("rbac", Middleware)
 	initialized = true
 	logger.Info("RBAC 系统初始化完成")
 
-	return err
+	return nil
 }
 
 func initPaths() error {
 	if localModelFile == "" {
-		localModelFile = filepath.Join(constants.ConfigDir, constants.RBACDirName, constants.ModelFileFileName)
+		localModelFile = filepath.Join(constants.ConfigDir, constants.PoliciesDirName, constants.ModelFileFileName)
 	}
 	if localPolicyFile == "" {
-		localPolicyFile = filepath.Join(constants.ConfigDir, constants.RBACDirName, constants.PoliciesfileName)
+		localPolicyFile = filepath.Join(constants.ConfigDir, constants.PoliciesDirName, constants.PoliciesfileName)
 	}
 	logger.Debugf("策略文件路径: %s | 模型文件路径: %s", localPolicyFile, localModelFile)
 
@@ -94,20 +91,26 @@ func initPaths() error {
 	return nil
 }
 
-func syncEssentialFiles(load *loader.ConsulFileLoader) error {
+func syncEssentialFiles(ctx context.Context, source loader.Source) error {
 	logger.Info("开始同步策略文件...")
 	defer logger.Debugf("文件同步完成")
 
-	if err := load.SyncFile(
-		path.Join(constants.RBACDirName, constants.PoliciesfileName),
+	policyKey := loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.PoliciesfileName)))
+	if err := loader.SyncFile(
+		ctx,
+		source,
+		policyKey,
 		localPolicyFile,
 		validateFileContent,
 	); err != nil {
 		return err
 	}
 
-	return load.SyncFile(
-		path.Join(constants.RBACDirName, constants.ModelFileFileName),
+	modelKey := loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.ModelFileFileName)))
+	return loader.SyncFile(
+		ctx,
+		source,
+		modelKey,
 		localModelFile,
 		validateFileContent,
 	)
@@ -159,80 +162,55 @@ func initializeEnforcer() error {
 		logger.Errorf("[RBAC] 创建执行器失败: %v", err)
 		return errors.ErrAuthCheckFailed
 	}
+	if err := enforcer.LoadPolicy(); err != nil {
+		logger.Errorf("[RBAC] 加载策略失败: %v", err)
+		return fmt.Errorf("load RBAC policy: %w", err)
+	}
 
+	// Build and load the candidate before taking the write lock. Requests keep
+	// using the last known-good enforcer until the replacement is fully valid.
 	enforcerMutex.Lock()
 	defer enforcerMutex.Unlock()
 	syncedCachedEnforcer = enforcer
-	syncedCachedEnforcer.StartAutoLoadPolicy(1 * time.Minute)
 	return nil
 }
 
-func setupWatchers(load *loader.ConsulFileLoader) {
+func setupWatchers(ctx context.Context, source loader.Source) {
+	if source.Name() == constants.ConfigSourceFile {
+		return
+	}
+
 	watchPaths := []struct {
-		path     string
-		callback func()
+		key      string
+		target   string
+		callback func() error
 	}{
-		{path.Join(constants.RBACDirName, constants.PoliciesfileName), onPolicyUpdate},
-		{path.Join(constants.RBACDirName, constants.ModelFileFileName), onModelUpdate},
+		{
+			loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.PoliciesfileName))),
+			localPolicyFile,
+			reloadPolicy,
+		},
+		{
+			loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.PoliciesDirName, constants.ModelFileFileName))),
+			localModelFile,
+			initializeEnforcer,
+		},
 	}
 
 	for _, w := range watchPaths {
-		if err := load.Watch(w.path, w.callback); err != nil {
-			logger.Errorf("启动监听失败: %s: %v", w.path, err)
-		}
+		w := w
+		go func() {
+			err := loader.WatchFile(ctx, source, w.key, w.target, validateFileContent, w.callback,
+				func(err error) { logger.Errorf("配置 %s 更新失败，保留当前版本: %v", w.key, err) })
+			if err != nil && ctx.Err() == nil {
+				logger.Errorf("配置 %s 监听退出: %v", w.key, err)
+			}
+		}()
 	}
 }
 
-func onPolicyUpdate() {
-	logger.Info("[RBAC] 检测到策略变更，开始处理...")
-	defer logger.Info("[RBAC] 策略更新处理完成")
-
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Error(err)
-		return
-	}
-
-	if err := load.SyncFile(
-		path.Join(constants.RBACDirName, constants.PoliciesfileName),
-		localPolicyFile,
-		validateFileContent,
-	); err != nil {
-		logger.Errorf("[RBAC] 策略文件同步失败: %v", err)
-		return
-	}
-
-	enforcerMutex.RLock()
-	defer enforcerMutex.RUnlock()
-	if err := syncedCachedEnforcer.LoadPolicy(); err != nil {
-		logger.Errorf("[RBAC] 策略重载失败: %v", err)
-	}
-}
-
-func onModelUpdate() {
-	logger.Info("[RBAC] 检测到模型变更，开始处理...")
-	defer logger.Info("[RBAC] 模型更新处理完成")
-
-	// 新增文件同步逻辑
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("[RBAC] 获取加载器失败: %v", err)
-		return
-	}
-
-	if err := load.SyncFile(
-		path.Join(constants.RBACDirName, constants.ModelFileFileName),
-		localModelFile,
-		validateFileContent,
-	); err != nil {
-		logger.Errorf("[RBAC] 模型文件同步失败: %v", err)
-		return
-	}
-
-	// 重新初始化执行器
-	if err := initializeEnforcer(); err != nil {
-		logger.Errorf("[RBAC] 模型重载失败: %v", err)
-	}
+func reloadPolicy() error {
+	return initializeEnforcer()
 }
 
 type Cache struct {
@@ -306,8 +284,14 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 		}
 		matchers = append(matchers, matcher)
 	}
+
+	tracer := otel.Tracer("middleware/rbac")
+
 	return func(next http.RoundTripper) http.RoundTripper {
 		return middleware.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			ctx, span := tracer.Start(req.Context(), "middleware.rbac", trace.WithSpanKind(trace.SpanKindInternal))
+			defer span.End()
+
 			logger.Debugf("[RBAC] Processing request: %s %s", req.Method, req.URL.Path)
 
 			// 使用PathMatcher 进行路径匹配
@@ -321,27 +305,31 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 			}
 
 			if skipAuth {
-				return next.RoundTrip(req)
+				span.SetStatus(codes.Ok, "skipped")
+				return next.RoundTrip(req.WithContext(ctx))
 			}
 
 			userID := req.Header.Get(constants.UserIdMetadataKey)
 			if userID == "" {
 				logger.Warn("[RBAC] 无法获取用户ID")
+				span.SetStatus(codes.Error, "missing user id")
 				return nil, errors.ErrPermissionDenied
 			}
 
 			role, err := getUserRoles(userID)
 			if err != nil {
 				logger.Errorf("[RBAC] 无法获取用户角色: %v", err)
+				span.SetStatus(codes.Error, err.Error())
 				return nil, errors.ErrAuthCheckFailed
 			}
+			logger.Debugf("[RBAC]: 用户 %v 所属角色:%v 请求方法:%s 请求路径:%s", userID, role, req.Method, req.URL.Path)
 
 			enforcerMutex.RLock()
 			defer enforcerMutex.RUnlock()
 			allowed, syncedErr := syncedCachedEnforcer.Enforce(role, req.URL.Path, req.Method)
 			if syncedErr != nil {
 				logger.Errorf("[RBAC] 无法校验该用户的权限: %v", syncedErr)
-
+				span.SetStatus(codes.Error, syncedErr.Error())
 				return nil, errors.ErrAuthCheckFailed
 			}
 
@@ -349,9 +337,11 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				req.Header.Set(constants.UserRoleMetadataKey, role)
 				req.Header.Set(constants.UserOwnerMetadataKey, userOwner)
 				req.Header.Set(constants.UserIdMetadataKey, userID)
-				return next.RoundTrip(req)
+				span.SetStatus(codes.Ok, "allowed")
+				return next.RoundTrip(req.WithContext(ctx))
 			}
 			logger.Warnf("[RBAC] %v: 用户所属角色:%v 路由:%s 路径:%s", errors.ErrForbiddenRouteMsg, role, req.Method, req.URL.Path)
+			span.SetStatus(codes.Error, "forbidden")
 
 			return nil, errors.ErrForbiddenRoute
 		})

@@ -4,10 +4,8 @@ metadata:
   name: ecommerce-gateway-config
 data:
   OWNER: "org-ecommerce"
-  CASDOOR_URL: "http://apikv.com:8000"
+  CASDOOR_URL: "https://casdoor.apikv.com"
   CONSUL_ADDR: "consul://consul-server.consul.svc.cluster.local:8501"
-  CONSUL_CONFIG_PATH: "ecommerce/gateway/config.yaml"
-  CONSUL_CONFIG_PREFIX: "ecommerce/gateway"
   CONSUL_SCHEME: "https"
   CONSUL_INSECURE_SKIP_VERIFY: "true"
   POLICIES_FILE_PATH: "./dynamic-config/policies/policies.csv"

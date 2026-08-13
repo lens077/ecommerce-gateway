@@ -6,15 +6,19 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
+	gwerrors "github.com/go-kratos/gateway/errors"
 	"github.com/go-kratos/gateway/router"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var logger = log.NewHelper(log.With(log.DefaultLogger, "module", "router/mux"))
 
 var EnableStrictSlash = parseBool(os.Getenv("ENABLE_STRICT_SLASH"), false)
 
@@ -41,7 +45,7 @@ type muxRouter struct {
 func ProtectedHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Forwarded-For") != "" {
-			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			gwerrors.Write(w, r, gwerrors.ErrForbiddenRoute)
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -86,18 +90,28 @@ func (r *muxRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // Handle 注册路由
-func (r *muxRouter) Handle(pattern, method, host string, handler http.Handler, closer io.Closer) error {
+func (r *muxRouter) Handle(pattern, method, host, protocol string, handler http.Handler, closer io.Closer) error {
+	
 	next := r.Router.NewRoute().Handler(handler)
 	if host != "" {
 		next = next.Host(host)
 	}
 	if strings.HasSuffix(pattern, "*") {
-		// /api/echo/*
-		next = next.PathPrefix(strings.TrimRight(pattern, "*"))
+		prefix := strings.TrimRight(pattern, "*")
+		if strings.EqualFold(protocol, "GRPC") {
+			serviceName := strings.TrimPrefix(prefix, "/")
+			if serviceName != "" {
+				re := regexp.MustCompile("^/" + regexp.QuoteMeta(serviceName) + "(\\.|/)")
+				next = next.MatcherFunc(func(req *http.Request, match *mux.RouteMatch) bool {
+					return re.MatchString(req.URL.Path)
+				})
+			} else {
+				next = next.PathPrefix(prefix)
+			}
+		} else {
+			next = next.PathPrefix(prefix)
+		}
 	} else {
-		// /api/echo/hello
-		// /api/echo/[a-z]+
-		// /api/echo/{name}
 		next = next.Path(pattern)
 	}
 	if method != "" && method != "*" {
@@ -112,11 +126,11 @@ func (r *muxRouter) Handle(pattern, method, host string, handler http.Handler, c
 
 func (r *muxRouter) SyncClose(ctx context.Context) error {
 	if timeout := waitTimeout(ctx, r.wg); timeout {
-		log.Warnf("Time out to wait all requests complete, processing force close")
+		logger.Warnf("Time out to wait all requests complete, processing force close")
 	}
 	for _, closer := range r.allCloser {
 		if err := closer.Close(); err != nil {
-			log.Errorf("Failed to execute close function: %+v", err)
+			logger.Errorf("Failed to execute close function: %+v", err)
 			continue
 		}
 	}

@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"context"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -9,10 +10,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-kratos/gateway/middleware/routerfilter"
 
@@ -24,6 +25,9 @@ import (
 	kratoserrors "github.com/go-kratos/kratos/v2/errors"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -35,7 +39,7 @@ var (
 	mu            sync.RWMutex
 )
 
-func Init() error {
+func Init(ctx context.Context, source loader.Source) error {
 	if initialized {
 		return nil
 	}
@@ -49,16 +53,12 @@ func Init() error {
 		return kratoserrors.New(500, "INTERNAL_ERROR", "创建密钥目录失败")
 	}
 
-	// 获取Loader实例
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("[JWT] 获取Loader失败: %v", err)
-		return kratoserrors.New(500, "INTERNAL_ERROR", "获取Loader失败")
-	}
-
 	// 同步公钥文件
-	if err := load.SyncFile(
-		path.Join(constants.SecretsDirName, constants.JwtPublicFileName),
+	key := loader.RelatedKey(source.MainKey(), filepath.ToSlash(filepath.Join(constants.SecretsDirName, constants.JwtPublicFileName)))
+	if err := loader.SyncFile(
+		ctx,
+		source,
+		key,
 		publicKeyPath,
 		validatePublicKey,
 	); err != nil {
@@ -72,13 +72,14 @@ func Init() error {
 		return kratoserrors.New(500, "INTERNAL_ERROR", "初始公钥加载失败")
 	}
 
-	// 启动监听
-	if err := load.Watch(
-		path.Join(constants.SecretsDirName, constants.JwtPublicFileName),
-		onPublicKeyUpdate,
-	); err != nil {
-		logger.Errorf("[JWT] 启动监听失败: %v", err)
-		return kratoserrors.New(500, "INTERNAL_ERROR", "启动监听失败")
+	if source.Name() != constants.ConfigSourceFile {
+		go func() {
+			err := loader.WatchFile(ctx, source, key, publicKeyPath, validatePublicKey, reloadPublicKey,
+				func(err error) { logger.Errorf("[JWT] 公钥更新失败，保留当前公钥: %v", err) })
+			if err != nil && ctx.Err() == nil {
+				logger.Errorf("[JWT] 公钥监听退出: %v", err)
+			}
+		}()
 	}
 
 	middleware.Register("jwt", Middleware)
@@ -96,32 +97,6 @@ func getPublicKeyPath() string {
 		constants.SecretsDirName,
 		constants.JwtPublicFileName,
 	)
-}
-
-func onPublicKeyUpdate() {
-	logger.Info("[JWT] 检测到公钥变更，开始处理...")
-	defer logger.Info("[JWT] 更新处理完成")
-
-	load, err := loader.GetConsulLoader()
-	if err != nil {
-		logger.Errorf("[JWT] 获取加载器失败: %v", err)
-		return
-	}
-
-	// 重新同步最新公钥文件
-	if err := load.SyncFile(
-		path.Join(constants.SecretsDirName, constants.JwtPublicFileName),
-		publicKeyPath,
-		validatePublicKey,
-	); err != nil {
-		logger.Errorf("[JWT] 公钥同步失败: %v", err)
-		return
-	}
-
-	// 重新加载公钥
-	if err := reloadPublicKey(); err != nil {
-		logger.Errorf("[JWT] 公钥重载失败: %v", err)
-	}
 }
 
 func reloadPublicKey() error {
@@ -208,7 +183,11 @@ func ParseJwt(tokenString string) (*CustomClaims, error) {
 			return nil, kratoserrors.New(400, "INVALID_SIGNING_METHOD", "不支持的签名方法")
 		}
 		return publicKey, nil
-	})
+	},
+		// 容忍网关与 Casdoor 之间的时钟偏移：否则刚签发的令牌（nbf/iat≈now）
+		// 在前端登录后毫秒级请求时会被判定为 "token is not valid yet" 而 401，导致登录死循环。
+		jwt.WithLeeway(60*time.Second),
+	)
 
 	// 首先检查是否是令牌过期错误
 	if goErrors.Is(err, jwt.ErrTokenExpired) {
@@ -243,12 +222,17 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 			}
 			matchers = append(matchers, matcher)
 			// 记录创建的匹配器规则
-			logger.Infof("[JWT] 创建匹配器规则: %s, 方法: %v", rule.Path, rule.Methods)
+			// logger.Infof("[JWT] 创建匹配器规则: %s, 方法: %v", rule.Path, rule.Methods)
 		}
 	}
 
+	tracer := otel.Tracer("middleware/jwt")
+
 	return func(next http.RoundTripper) http.RoundTripper {
 		return middleware.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			ctx, span := tracer.Start(req.Context(), "middleware.jwt", trace.WithSpanKind(trace.SpanKindInternal))
+			defer span.End()
+
 			// 记录请求路径用于调试
 			logger.Infof("[JWT] 处理请求: %s %s", req.Method, req.URL.Path)
 
@@ -259,25 +243,29 @@ func Middleware(c *config.Middleware) (middleware.Middleware, error) {
 				logger.Infof("[JWT] 规则 %d 匹配结果: %t, 原始模式: %s, 请求路径: %s, 请求方法: %s", i, ok, matcher.RawPattern(), req.URL.Path, req.Method)
 				if ok {
 					logger.Infof("[JWT] 请求匹配跳过规则，不需要JWT验证: %s %s", req.Method, req.URL.Path)
-					return next.RoundTrip(req)
+					span.SetStatus(codes.Ok, "skipped")
+					return next.RoundTrip(req.WithContext(ctx))
 				}
 			}
 
 			authHeader := req.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {
 				logger.Warn("[JWT] 缺少Bearer token")
+				span.SetStatus(codes.Error, "missing token")
 				return nil, kratoserrors.New(401, "MISSING_AUTH_TOKEN", "缺少Bearer token")
 			}
 
 			claims, err := ParseJwt(strings.TrimPrefix(authHeader, "Bearer "))
 			if err != nil {
 				logger.Errorf("[JWT] 令牌验证失败: %v", err)
+				span.SetStatus(codes.Error, err.Error())
 				return nil, err
 			}
 
-			req.Header.Set(constants.UserIdMetadataKey, claims.User.ID)
+			req.Header.Set(constants.UserIdMetadataKey, claims.User.Id)
 			req.Header.Set(constants.UserNameMetadataKey, claims.User.Name)
-			return next.RoundTrip(req)
+			span.SetStatus(codes.Ok, "authenticated")
+			return next.RoundTrip(req.WithContext(ctx))
 		})
 	}, nil
 }

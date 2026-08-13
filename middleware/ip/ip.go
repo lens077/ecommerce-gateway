@@ -8,6 +8,10 @@ import (
 	config "github.com/go-kratos/gateway/api/gateway/config/v1"
 	"github.com/go-kratos/gateway/middleware"
 	"github.com/go-kratos/kratos/v2/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // 定义IP相关的常量
@@ -20,30 +24,40 @@ const (
 	XForwardedFor = "X-Forwarded-For"
 )
 
+var logger = log.NewHelper(log.With(log.DefaultLogger, "module", "middleware/ip"))
+
 func Init() {
 	middleware.Register("ip", Middleware)
-	log.Info("[IP] 中间件初始化完成")
+	logger.Info("[IP] 中间件初始化完成")
 }
 
 // Middleware 创建一个收集客户端IP的中间件
 func Middleware(c *config.Middleware) (middleware.Middleware, error) {
+	tracer := otel.Tracer("middleware/ip")
+
 	return func(next http.RoundTripper) http.RoundTripper {
 		return middleware.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			ctx, span := tracer.Start(req.Context(), "middleware.ip", trace.WithSpanKind(trace.SpanKindInternal))
+			defer span.End()
+
 			// 获取客户端真实IP
 			clientIP := getClientIP(req)
 
 			// 记录是否成功收集到客户端IP
 			if clientIP == "" {
-				log.Warnf("[IP] 未能从请求中收集到客户端IP, URL: %s", req.URL.Path)
+				logger.Warnf("[IP] 未能从请求中收集到客户端IP, URL: %s", req.URL.Path)
+				span.SetStatus(codes.Ok, "no client ip")
 			} else {
-				log.Infof("[IP] 成功收集到客户端IP: %s, URL: %s", clientIP, req.URL.Path)
+				logger.Debugf("[IP] 成功收集到客户端IP: %s, URL: %s", clientIP, req.URL.Path)
+				span.SetStatus(codes.Ok, "collected")
+				span.SetAttributes(attribute.String("client.ip", clientIP))
 			}
 
 			// 将客户端IP添加到请求头中
 			req.Header.Set(ClientIPHeader, clientIP)
 
 			// 继续处理请求
-			return next.RoundTrip(req)
+			return next.RoundTrip(req.WithContext(ctx))
 		})
 	}, nil
 }

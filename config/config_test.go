@@ -2,105 +2,129 @@ package config
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	configv1 "github.com/go-kratos/gateway/api/gateway/config/v1"
-	corsv1 "github.com/go-kratos/gateway/api/gateway/middleware/cors/v1"
-	tracingv1 "github.com/go-kratos/gateway/api/gateway/middleware/tracing/v1"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/anypb"
-	"google.golang.org/protobuf/types/known/durationpb"
+	"github.com/go-kratos/gateway/pkg/loader"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func equalTo() *configv1.Gateway {
-	return &configv1.Gateway{
-		Name: "helloworld",
-		Hosts: []string{
-			"localhost",
-			"127.0.0.1",
-		},
-		Endpoints: []*configv1.Endpoint{
-			{
-				Path:     "/helloworld/*",
-				Protocol: configv1.Protocol_HTTP,
-				Timeout:  &durationpb.Duration{Seconds: 1},
-				Backends: []*configv1.Backend{
-					{
-						Target: "127.0.0.1:8000",
-					},
-				},
-			},
-			{
-				Path:     "/helloworld.Greeter/*",
-				Method:   "POST",
-				Protocol: configv1.Protocol_GRPC,
-				Timeout:  &durationpb.Duration{Seconds: 1},
-				Backends: []*configv1.Backend{
-					{
-						Target: "127.0.0.1:9000",
-					},
-				},
-				Retry: &configv1.Retry{
-					Attempts:      3,
-					PerTryTimeout: &durationpb.Duration{Nanos: 500000000},
-					Conditions: []*configv1.Condition{
-						{Condition: &configv1.Condition_ByStatusCode{ByStatusCode: "502-504"}},
-						{Condition: &configv1.Condition_ByHeader{ByHeader: &configv1.ConditionHeader{
-							Name:  "Grpc-Status",
-							Value: "14",
-						}}},
-					},
-				},
-			},
-		},
-		Middlewares: []*configv1.Middleware{
-			{
-				Name: "cors",
-				Options: asAny(&corsv1.Cors{
-					AllowCredentials: true,
-					AllowOrigins:     []string{".google.com"},
-					AllowMethods:     []string{"GET", "POST", "OPTIONS"},
-				}),
-			},
-			{
-				Name: "tracing",
-				Options: asAny(&tracingv1.Tracing{
-					HttpEndpoint: "localhost:4318",
-				}),
-			},
-		},
-	}
+type blockingSource struct {
+	data    []byte
+	started chan struct{}
+	once    sync.Once
 }
 
-func asAny(in proto.Message) *anypb.Any {
-	out, err := anypb.New(in)
-	if err != nil {
-		panic(err)
-	}
-	return out
+func (s *blockingSource) Name() string    { return "config_center" }
+func (s *blockingSource) MainKey() string { return "config.yaml" }
+func (s *blockingSource) Load(context.Context, string) ([]byte, error) {
+	return append([]byte(nil), s.data...), nil
+}
+func (s *blockingSource) Watch(ctx context.Context, _ string, _ func(loader.Event)) error {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return nil
 }
 
-func TestFileLoader(t *testing.T) {
-	fl := &FileLoader{
-		confPath: "./fixtures/config.yaml",
-	}
-	cfg, err := fl.Load(context.TODO())
-	if err != nil {
-		t.Error(err)
+func TestFileLoaderLoad(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gateway.yaml")
+	configData := []byte(`
+name: test-gateway
+version: v1
+endpoints:
+  - path: /health
+    method: GET
+    protocol: HTTP
+    backends:
+      - target: 127.0.0.1:8080
+`)
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	left, err := protojson.Marshal(cfg)
+	configLoader, err := NewFileLoader(configPath, "")
+	require.NoError(t, err)
+	t.Cleanup(configLoader.Close)
+	cfg, err := configLoader.Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := protojson.Marshal(equalTo())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("gateway config:\nloaded: %s\nshould equal to: %s\n", left, right)
 
-	if !proto.Equal(cfg, equalTo()) {
-		t.Errorf("inconsistent gateway config")
+	if cfg.Name != "test-gateway" || cfg.Version != "v1" {
+		t.Fatalf("unexpected gateway metadata: %+v", cfg)
 	}
+	if len(cfg.Endpoints) != 1 {
+		t.Fatalf("expected one endpoint, got %d", len(cfg.Endpoints))
+	}
+	endpoint := cfg.Endpoints[0]
+	if endpoint.Path != "/health" || endpoint.Method != "GET" || endpoint.Protocol != configv1.Protocol_HTTP {
+		t.Fatalf("unexpected endpoint: %+v", endpoint)
+	}
+	if len(endpoint.Backends) != 1 || endpoint.Backends[0].Target != "127.0.0.1:8080" {
+		t.Fatalf("unexpected backends: %+v", endpoint.Backends)
+	}
+}
+
+func TestSourceLoaderStartsWatchAfterHandlerRegistration(t *testing.T) {
+	source := &blockingSource{
+		data:    []byte("name: test-gateway\nversion: v1\n"),
+		started: make(chan struct{}),
+	}
+	configLoader, err := NewSourceLoader(source, "")
+	require.NoError(t, err)
+	t.Cleanup(configLoader.Close)
+
+	configLoader.lock.RLock()
+	require.Nil(t, configLoader.watchCancel)
+	configLoader.lock.RUnlock()
+
+	configLoader.Watch(func(*configv1.Gateway) error { return nil })
+	select {
+	case <-source.started:
+	case <-time.After(time.Second):
+		t.Fatal("source watch did not start after handler registration")
+	}
+}
+
+func TestExecuteLoaderRollsBackEnvironmentAndSnapshotOnApplyFailure(t *testing.T) {
+	const envKey = "GATEWAY_CONFIG_TEST_ENV"
+	t.Setenv(envKey, "old")
+	source := &blockingSource{
+		data:    []byte("name: test-gateway\nversion: old\n"),
+		started: make(chan struct{}),
+	}
+	configLoader, err := NewSourceLoader(source, "")
+	require.NoError(t, err)
+	t.Cleanup(configLoader.Close)
+	configLoader.onChangeHandlers = []OnChange{
+		func(*configv1.Gateway) error { return assert.AnError },
+	}
+
+	update := []byte("name: test-gateway\nversion: new\nenvs:\n  " + envKey + ": new\n")
+	err = configLoader.executeLoader(update, map[string]string{})
+	require.Error(t, err)
+	assert.Equal(t, "old", os.Getenv(envKey))
+
+	current, loadErr := configLoader.Load(context.Background())
+	require.NoError(t, loadErr)
+	assert.Equal(t, "old", current.GetVersion())
+}
+
+func TestApplyEnvsRollsBackPartialUpdate(t *testing.T) {
+	const validKey = "A_GATEWAY_CONFIG_TEST_ENV"
+	t.Setenv(validKey, "old")
+
+	rollback, err := applyEnvs(&configv1.Gateway{Envs: map[string]string{
+		validKey:        "new",
+		"Z_INVALID=KEY": "invalid",
+	}})
+
+	require.Error(t, err)
+	assert.Nil(t, rollback)
+	assert.Equal(t, "old", os.Getenv(validKey))
 }

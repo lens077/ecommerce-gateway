@@ -12,8 +12,7 @@ import (
 	"time"
 
 	config "github.com/go-kratos/gateway/api/gateway/config/v1"
-
-	"github.com/go-kratos/kratos/v2/log"
+	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/kratos/v2/registry"
 	"github.com/go-kratos/kratos/v2/selector"
 	"github.com/go-kratos/kratos/v2/selector/p2c"
@@ -24,10 +23,10 @@ type Factory func(*config.Endpoint) (Client, error)
 
 type Option func(*options)
 type options struct {
-	pickerBuilder        selector.Builder
-	enableHealthCheck    bool
-	healthCheckInterval  time.Duration
-	healthCheckTimeout   time.Duration
+	pickerBuilder         selector.Builder
+	enableHealthCheck     bool
+	healthCheckInterval   time.Duration
+	healthCheckTimeout    time.Duration
 	maxHealthCheckRetries int
 }
 
@@ -61,10 +60,10 @@ func WithHealthCheckTimeout(timeout time.Duration) Option {
 // NewFactory new a client factory.
 func NewFactory(r registry.Discovery, opts ...Option) Factory {
 	o := &options{
-		pickerBuilder:        p2c.NewBuilder(),
-		enableHealthCheck:    true, // 默认启用健康检查
-		healthCheckInterval:  10 * time.Second,
-		healthCheckTimeout:   2 * time.Second,
+		pickerBuilder:         p2c.NewBuilder(),
+		enableHealthCheck:     true,
+		healthCheckInterval:   constants.HealthCheckInterval,
+		healthCheckTimeout:    constants.HealthCheckTimeout,
 		maxHealthCheckRetries: 3,
 	}
 	for _, opt := range opts {
@@ -85,7 +84,7 @@ func NewFactory(r registry.Discovery, opts ...Option) Factory {
 				WithMaxFailures(o.maxHealthCheckRetries),
 			)
 			healthChecker.Start()
-			log.Infof("Health checker enabled for endpoint: %s", endpoint.Path)
+			LOG.Infof("Health checker enabled for endpoint: %s", endpoint.Path)
 		}
 
 		applier := &nodeApplier{
@@ -110,15 +109,10 @@ func NewFactory(r registry.Discovery, opts ...Option) Factory {
 		client := newClient(applier, picker, clientOpts...)
 
 		// 如果是gRPC请求且路径以*结尾，创建grpcClient包装器
-		// 例如：path: /search*，请求路径 /search/v1.SearchService/Search -> /v1.SearchService/Search
-		// 这样JWT中间件就能看到完整的原始路径，正确匹配跳过规则
-		// 而实际发送到后端的请求则是去除前缀后的路径
 		if endpoint.Protocol == config.Protocol_GRPC && strings.HasSuffix(endpoint.Path, "*") {
-			stripPrefix := strings.TrimSuffix(endpoint.Path, "*")
 			return &grpcClient{
-				client:      client,
-				stripPrefix: stripPrefix,
-				protocol:    endpoint.Protocol,
+				client:   client,
+				protocol: endpoint.Protocol,
 			}, nil
 		}
 
@@ -127,11 +121,6 @@ func NewFactory(r registry.Discovery, opts ...Option) Factory {
 }
 
 // grpcClient 是对client的包装，用于处理gRPC请求的路径
-// 当请求是gRPC且路径以*结尾时，自动去除前缀
-// 例如：path: /search*，请求路径 /search/v1.SearchService/Search -> /v1.SearchService/Search
-// 这样JWT中间件就能看到完整的原始路径，正确匹配跳过规则
-// 而实际发送到后端的请求则是去除前缀后的路径
-
 type grpcClient struct {
 	client      *client
 	stripPrefix string
@@ -140,24 +129,6 @@ type grpcClient struct {
 
 // RoundTrip 实现 http.RoundTripper 接口
 func (c *grpcClient) RoundTrip(req *http.Request) (*http.Response, error) {
-	// 如果是gRPC请求且需要去除前缀
-	if c.protocol == config.Protocol_GRPC && c.stripPrefix != "" {
-		// 克隆请求，避免修改原始请求（原始请求用于中间件匹配）
-		reqClone := req.Clone(req.Context())
-		// 去除前缀
-		if strings.HasPrefix(reqClone.URL.Path, c.stripPrefix) {
-			newPath := strings.TrimPrefix(reqClone.URL.Path, c.stripPrefix)
-			if newPath == "" {
-				newPath = "/"
-			} else if newPath[0] != '/' {
-				newPath = "/" + newPath
-			}
-			reqClone.URL.Path = newPath
-			// 使用克隆的请求发送到后端
-			return c.client.RoundTrip(reqClone)
-		}
-	}
-	// 其他情况直接使用原始请求
 	return c.client.RoundTrip(req)
 }
 
@@ -167,24 +138,24 @@ func (c *grpcClient) Close() error {
 }
 
 type nodeApplier struct {
-	canceled        int64
-	cancel          context.CancelFunc
-	endpoint        *config.Endpoint
-	registry        registry.Discovery
-	picker          selector.Selector
-	healthChecker   HealthChecker
-	ctx             context.Context
-	refreshTicker   *time.Ticker
+	canceled      int64
+	cancel        context.CancelFunc
+	endpoint      *config.Endpoint
+	registry      registry.Discovery
+	picker        selector.Selector
+	healthChecker HealthChecker
+	ctx           context.Context
 }
 
 func (na *nodeApplier) apply(ctx context.Context) error {
 	// 保存 ctx
 	na.ctx = ctx
-	
+
 	var nodes []selector.Node
 	for _, backend := range na.endpoint.Backends {
 		target, err := parseTarget(backend.Target)
 		if err != nil {
+			// 对于配置错误，返回错误（这是配置问题，不应该容忍）
 			return err
 		}
 		switch target.Scheme {
@@ -198,50 +169,31 @@ func (na *nodeApplier) apply(ctx context.Context) error {
 			node := newNode(nodeAddr, na.endpoint.Protocol, weighted, map[string]string{}, "", "")
 			nodes = append(nodes, node)
 			na.picker.Apply(nodes)
+			LOG.Infof("Applied direct backend for endpoint %s: %s", na.endpoint.Path, nodeAddr)
 		case "discovery":
 			// 添加监听，该端点在注册中心中的实例列表都会写入到 na 中，且如果监听到服务列表的变化，则会调用na的回调
+			// 注意：即使服务在 Consul 中不存在，AddWatch 也会正常返回
+			// 网关会继续启动，并在服务上线后自动发现
 			existed := AddWatch(ctx, na.registry, target.Endpoint, na)
 			if existed {
-				log.Infof("watch target %+v already existed", target)
+				LOG.Infof("watch target %+v already existed", target)
+			} else {
+				LOG.Infof("Started watching discovery target %s for endpoint %s (service may be unavailable initially, gateway will continue starting)",
+					target.Endpoint, na.endpoint.Path)
 			}
-			
-			// 启动定期刷新机制，确保即使 watcher 不工作，也能获取最新的服务列表
-			na.startRefreshLoop(target.Endpoint)
+
+			// 这里曾经有一个 15s 的 startRefreshLoop 兜底轮询,现已删除。它是
+			// watcher 生命周期 bug 时代的产物:watcher 断了不会重建,所以要靠轮询
+			// 把服务列表补回来。watcher 修好之后它只剩三条害处 ——
+			//  1. 未启动的服务每 15s 刷一条 "not found in registry" WARN,淹没真日志;
+			//  2. 它的 Callback 会调 healthChecker.updateNodes,把失败计数清零,
+			//     导致健康检查器永远攒不满 maxFailures,标不出任何不健康节点;
+			//  3. 与 watcher 推送的节点列表并发写 picker,互相覆盖。
 		default:
 			return fmt.Errorf("unknown scheme: %s", target.Scheme)
 		}
 	}
 	return nil
-}
-
-// startRefreshLoop 启动定期刷新服务列表的循环
-func (na *nodeApplier) startRefreshLoop(serviceName string) {
-	na.refreshTicker = time.NewTicker(15 * time.Second)
-	
-	go func() {
-		for {
-			select {
-			case <-na.ctx.Done():
-				na.refreshTicker.Stop()
-				return
-			case <-na.refreshTicker.C:
-				// 主动从 Consul 获取最新的服务列表
-				services, err := na.registry.GetService(na.ctx, serviceName)
-				if err != nil {
-					log.Warnf("Failed to refresh service list for %s: %v", serviceName, err)
-					continue
-				}
-				if len(services) == 0 {
-					log.Warnf("Empty service list for %s during refresh", serviceName)
-					continue
-				}
-				
-				log.Infof("Refreshed service list for %s, got %d instances", serviceName, len(services))
-				// 更新服务列表
-				na.Callback(services)
-			}
-		}
-	}()
 }
 
 var _defaultWeight = int64(10)
@@ -277,13 +229,13 @@ func (na *nodeApplier) Callback(services []*registry.ServiceInstance) error {
 				if port > 0 {
 					// 使用本地地址或从http地址中提取的IP和端口
 					addr = extractAddressFromEndpoints(ser.Endpoints, port)
-					log.Infof("Using extracted endpoint address: %s for service: %s (scheme: %s)", addr, ser.Name, scheme)
+					// LOG.Infof("Using extracted endpoint address: %s for service: %s (scheme: %s)", addr, ser.Name, scheme)
 				} else {
-					log.Errorf("failed to parse endpoint: %v/%s: %v, and no port available", ser.Endpoints, scheme, err)
+					LOG.Errorf("failed to parse endpoint: %v/%s: %v, and no port available", ser.Endpoints, scheme, err)
 					continue
 				}
 			} else {
-				log.Errorf("failed to parse endpoint: %v/%s: %v", ser.Endpoints, scheme, err)
+				LOG.Errorf("failed to parse endpoint: %v/%s: %v", ser.Endpoints, scheme, err)
 				continue
 			}
 		}
@@ -297,7 +249,7 @@ func (na *nodeApplier) Callback(services []*registry.ServiceInstance) error {
 	// 更新健康检查器的节点列表（如果启用了健康检查）
 	if na.healthChecker != nil {
 		na.healthChecker.updateNodes(nodes)
-		log.Infof("Updated health checker nodes for endpoint: %s, count: %d", na.endpoint.Path, len(nodes))
+		// LOG.Infof("Updated health checker nodes for endpoint: %s, count: %d", na.endpoint.Path, len(nodes))
 	}
 
 	return nil
@@ -346,7 +298,7 @@ func extractAddressFromEndpoints(endpoints []string, port int) string {
 }
 
 func (na *nodeApplier) Cancel() {
-	log.Infof("Closing node applier for endpoint: %+v", na.endpoint)
+	LOG.Infof("Closing node applier for endpoint: %+v", na.endpoint)
 	atomic.StoreInt64(&na.canceled, 1)
 	na.cancel()
 }

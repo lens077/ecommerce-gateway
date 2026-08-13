@@ -7,10 +7,6 @@ const (
 
 	// ConsulAddr Consul 服务发现地址
 	ConsulAddr = "CONSUL_ADDR"
-	// ConsulConfigPrefix Consul 作为配置中心时的配置文件前缀
-	ConsulConfigPrefix = "CONSUL_CONFIG_PREFIX"
-	// ConsulConfigPath Consul 作为配置中心时的配置文件路径
-	ConsulConfigPath = "CONSUL_CONFIG_PATH"
 	// ConsulScheme Consul服务器的连接协议(http/https)
 	ConsulScheme = "CONSUL_SCHEME"
 	// ConsulInsecureSkipVerify 是否跳过 TLS 证书验证
@@ -19,6 +15,12 @@ const (
 	ConsulToken = "CONSUL_TOKEN"
 	// ConsulDatacenter Consul 数据中心
 	ConsulDatacenter = "CONSUL_DATACENTER"
+
+	// EnvConfigSourceFile 指向本地 SourceConfig selector。正常启动只接受 config_center。
+	EnvConfigSourceFile = "CONFIG_SOURCE_FILE"
+	// EnvConfigSource/EnvConfigFile 只用于显式本地文件模式。
+	EnvConfigSource = "CONFIG_SOURCE"
+	EnvConfigFile   = "CONFIG_FILE"
 
 	// PriorityConfigDir 优先级配置目录
 	PriorityConfigDir = "PRIORITY_CONFIG"
@@ -59,6 +61,11 @@ const (
 	ProxyIdleTimeout       = "PROXY_IDLE_TIMEOUT"
 )
 
+const (
+	ConfigSourceFile         = "file"
+	ConfigSourceConfigCenter = "config_center"
+)
+
 // 默认值
 const (
 	// ConfigDir 配置目录
@@ -73,14 +80,14 @@ const (
 	UserRoleMetadataKey  = "x-md-global-role"
 	UserIdMetadataKey    = "x-md-global-user-id"
 
-	// RBACDirName 基于角色的访问控制
-	RBACDirName       = "rbac"
+	// PoliciesDirName 权限策略目录
+	PoliciesDirName   = "policies"
 	PoliciesfileName  = "policies.csv"
 	ModelFileFileName = "model.conf"
 
 	TlsDirName       = "tls"
-	DefaultHTTPPort  = ":443" // TCP for HTTP/1.1 & HTTP/2
-	DefaultHTTP3Port = ":443" // UDP for HTTP/3
+	DefaultHTTPPort  = ":8080" // TCP for HTTP/1.1 & HTTP/2
+	DefaultHTTP3Port = ":443"  // UDP for HTTP/3
 	CrtFileName      = "gateway.crt"
 	KeyFileName      = "gateway.key"
 )

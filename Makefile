@@ -1,57 +1,38 @@
 API_PROTO_FILES=$(shell find api -name *.proto)
+CCR_REPOSITORY ?= ccr.ccs.tencentyun.com/sumery/ecommerce-gateway
+GHCR_REPOSITORY ?= ghcr.io/lens077/ecommerce-gateway
+# 传给 Dockerfile 的 ARG 名是 GO_IMAGE(下划线),别写成 GOIMAGE —— 那样是空传,
+# 实际用的是 Dockerfile 的默认值。这里的值必须 >= go.mod 要求的 go 版本。
+GOIMAGE ?= golang:1.26.5-alpine3.24
+VERSION ?= latest
+GATEWAY_PORT ?= 8080
+PLATFORM_1 ?= linux/amd64
+PLATFORM_2 ?= linux/arm64
 
 .PHONY: api
-# generate api proto
 api:
 	protoc --proto_path=./api \
 	  --proto_path=./third_party \
  	  --go_out=paths=source_relative:./api \
 	  $(API_PROTO_FILES)
 
-REPOSITORY ?= ccr.ccs.tencentyun.com/sumery/ecommerce-gateway
-GOIMAGE ?= golang:1.24.0-alpine3.21
-VERSION ?= latest
-GATEWAY_PORT ?= 8080
-PLATFORM_1 ?= linux/amd64
-PLATFORM_2 ?= linux/arm64
+.PHONY: dev-file
+dev-file:
+	env -u CONFIG_SOURCE_FILE \
+	CONFIG_SOURCE=file \
+	CONFIG_FILE=configs/config.yaml \
+	go run ./cmd/gateway
 
 .PHONY: dev
 dev:
-	CASDOOR_URL=https://casdoor.sumery.com \
-	CONSUL_ADDR=consul://consul.sumery.com:443 \
-	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
-	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
+	CASDOOR_URL=https://casdoor.apikv.com \
+	CONSUL_ADDR=consul://192.168.3.112:8500 \
+	CONFIG_SOURCE_FILE=configs/source.dev.yaml \
 	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
 	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
 	USE_TLS=false \
 	USE_HTTP3=false \
-	HTTP_PORT=8080 \
-	go run cmd/gateway/main.go
-
-.PHONY: pre
-pre:
-	CASDOOR_URL=https://casdoor.sumery.com \
-	CONSUL_ADDR=consul://localhost:8500 \
-	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
-	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
-	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
-	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
-	USE_TLS=false \
-	USE_HTTP3=false \
-	HTTP_PORT=8080 \
-	go run cmd/gateway/main.go
-
-.PHONY: run
-run:
-	CASDOOR_URL=https://apikv.com:8081 \
-	CONSUL_ADDR=consul://apikv.com:8500 \
-	CONSUL_CONFIG_PATH=ecommerce/gateway/config.yaml \
-	CONSUL_CONFIG_PREFIX=ecommerce/gateway \
-	POLICIES_FILE_PATH=./dynamic-config/policies/policies.csv \
-	MODEL_FILE_PATH=./dynamic-config/policies/model.conf \
-	USE_TLS=false \
-	USE_HTTP3=false \
-	HTTP_PORT=8080 \
+	HTTP_PORT=$(GATEWAY_PORT) \
 	go run cmd/gateway/main.go
 
 .PHONY: consul
@@ -66,17 +47,17 @@ k8s-dev:
 k8s-prod:
 	kubectl apply -f deploy/prod
 
-.PHONY: build
-build:
+.PHONY: build docker-push
+build: docker-push
+
+docker-push:
 	docker buildx build . \
       --progress=plain \
-      -t $(REPOSITORY):$(VERSION) \
+      -t $(GHCR_REPOSITORY):$(VERSION) \
+      -t $(CCR_REPOSITORY):$(VERSION) \
       --build-arg CGOENABLED=0 \
-      --build-arg GOIMAGE=$(GOIMAGE) \
+      --build-arg GO_IMAGE=$(GOIMAGE) \
       --build-arg VERSION=$(VERSION) \
       --build-arg GATEWAY_PORT=$(GATEWAY_PORT) \
       --platform $(PLATFORM_1),$(PLATFORM_2) \
       --push
-
-https:
-	chmod +x cmd/gateway/dynamic-config/tls/generate-cert.sh && cmd/gateway/dynamic-config/tls//generate-cert.sh

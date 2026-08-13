@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-kratos/gateway/constants"
 	"github.com/go-kratos/gateway/proxy/debug"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/registry"
@@ -42,7 +43,8 @@ func instancesSetHash(instances []*registry.ServiceInstance) string {
 
 type watcherStatus struct {
 	watcher           registry.Watcher
-	initializedChan   chan struct{}
+	ctx               context.Context
+	cancel            context.CancelFunc
 	selectedInstances []*registry.ServiceInstance
 }
 
@@ -61,11 +63,15 @@ func newServiceWatcher() *serviceWatcher {
 	return s
 }
 
-func (s *serviceWatcher) setSelectedCache(endpoint string, instances []*registry.ServiceInstance) {
+func (s *serviceWatcher) setSelectedCache(endpoint string, status *watcherStatus, instances []*registry.ServiceInstance) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	s.watcherStatus[endpoint].selectedInstances = instances
+	if s.watcherStatus[endpoint] != status {
+		return false
+	}
+	status.selectedInstances = instances
+	return true
 }
 
 func (s *serviceWatcher) getSelectedCache(endpoint string) ([]*registry.ServiceInstance, bool) {
@@ -95,97 +101,143 @@ type Applier interface {
 	Canceled() bool
 }
 
-// Add 监听任务 监听该端点在注册中心中的服务的变化
-func (s *serviceWatcher) Add(ctx context.Context, discovery registry.Discovery, endpoint string, applier Applier) (watcherExisted bool) {
+// Add listens for changes to the endpoint without blocking gateway startup.
+func (s *serviceWatcher) Add(_ context.Context, discovery registry.Discovery, endpoint string, applier Applier) (watcherExisted bool) {
 	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	existed := func() bool {
-		// 检查该端点是否已经被监听
-		ws, ok := s.watcherStatus[endpoint]
-		if ok {
-			// 如果已经监听，则获取管道信号，检查是否初始化完成，如果没有，则阻塞，直到其他协程完成该监听的初始化
-			// this channel is used to notify the caller that the service watcher is initialized and ready to use
-			<-ws.initializedChan
-
-			// 如果端点的实例列表不为空，则调用回调将实例信息写入到节点应用器中
-			if len(ws.selectedInstances) > 0 {
-				serviceWatchLog.Infof("Using cached %d selected instances on endpoint: %s, hash: %s", len(ws.selectedInstances), endpoint, instancesSetHash(ws.selectedInstances))
-				applier.Callback(ws.selectedInstances)
-				return true
-			}
-
-			return true
-		}
-
-		// 如果没有监听，新建一个监听
-		ws = &watcherStatus{
-			initializedChan: make(chan struct{}),
-		}
-		// 根据对应的注册中心以及端点，初始化一个监听器
-		watcher, err := discovery.Watch(ctx, endpoint)
-		if err != nil {
-			serviceWatchLog.Errorf("Failed to initialize watcher on endpoint: %s, err: %+v", endpoint, err)
-			return false
-		}
-		serviceWatchLog.Infof("Succeeded to initialize watcher on endpoint: %s", endpoint)
-		ws.watcher = watcher
+	ws, watcherExisted := s.watcherStatus[endpoint]
+	if !watcherExisted {
+		watchCtx, cancel := context.WithCancel(context.Background())
+		ws = &watcherStatus{ctx: watchCtx, cancel: cancel}
 		s.watcherStatus[endpoint] = ws
+	}
 
-		// 尝试从监听器中获取服务实例列表 如果失败直接退出匿名函数调用
-		func() {
-			defer close(ws.initializedChan)
-			serviceWatchLog.Infof("Starting to do initialize services discovery on endpoint: %s", endpoint)
-			services, err := watcher.Next()
-			if err != nil {
-				serviceWatchLog.Errorf("Failed to do initialize services discovery on endpoint: %s, err: %+v, the watch process will attempt asynchronously", endpoint, err)
-				return
-			}
-			serviceWatchLog.Infof("Succeeded to do initialize services discovery on endpoint: %s, %d services, hash: %s", endpoint, len(services), instancesSetHash(ws.selectedInstances))
-			ws.selectedInstances = services
-			// 如果成功将服务实例列表写入到节点应用器中
-			applier.Callback(services)
-		}()
-
-		// 开启协程，轮询监听器中的服务列表
-		go func() {
-			for {
-				services, err := watcher.Next()
-				if err != nil {
-					if errors.Is(err, context.Canceled) {
-						serviceWatchLog.Warnf("The watch process on: %s has been canceled", endpoint)
-						// 清理已取消的监听状态，允许重新创建监听
-						s.lock.Lock()
-						delete(s.watcherStatus, endpoint)
-						s.lock.Unlock()
-						return
-					}
-					serviceWatchLog.Errorf("Failed to watch on endpoint: %s, err: %+v, the watch process will attempt again after 1 second", endpoint, err)
-					time.Sleep(time.Second)
-					continue
-				}
-				if len(services) == 0 {
-					serviceWatchLog.Warnf("Empty services on endpoint: %s, this most likely no available instance in discovery", endpoint)
-					continue
-				}
-				serviceWatchLog.Infof("Received %d services on endpoint: %s, hash: %s", len(services), endpoint, instancesSetHash(services))
-				s.setSelectedCache(endpoint, services)
-				s.doCallback(endpoint, services)
-			}
-		}()
-
-		return false
-	}()
-
-	serviceWatchLog.Infof("Add appliers on endpoint: %s", endpoint)
 	if applier != nil {
 		if _, ok := s.appliers[endpoint]; !ok {
 			s.appliers[endpoint] = make(map[string]Applier)
 		}
 		s.appliers[endpoint][uuid4()] = applier
 	}
+	cachedInstances := ws.selectedInstances
+	s.lock.Unlock()
 
-	return existed
+	if watcherExisted {
+		if len(cachedInstances) > 0 && applier != nil {
+			serviceWatchLog.Infof("Using cached %d selected instances on endpoint: %s, hash: %s", len(cachedInstances), endpoint, instancesSetHash(cachedInstances))
+			if err := applier.Callback(cachedInstances); err != nil {
+				serviceWatchLog.Errorf("Failed to apply cached services on endpoint: %s, err: %+v", endpoint, err)
+			}
+		}
+		return true
+	}
+
+	go s.watchLoop(ws.ctx, discovery, endpoint, ws)
+	return false
+}
+
+// watchLoop recreates failed registry watchers and applies each successful update.
+func (s *serviceWatcher) watchLoop(ctx context.Context, discovery registry.Discovery, endpoint string, status *watcherStatus) {
+	failureCount := 0
+
+	for {
+		if err := ctx.Err(); err != nil {
+			s.removeWatcher(endpoint, status)
+			return
+		}
+
+		watcher, err := discovery.Watch(ctx, endpoint)
+		if err == nil && !s.setWatcher(endpoint, status, watcher) {
+			_ = watcher.Stop()
+			return
+		}
+
+		if err == nil {
+			serviceWatchLog.Infof("Succeeded to initialize watcher on endpoint: %s", endpoint)
+			for {
+				services, nextErr := watcher.Next()
+				if nextErr != nil {
+					err = nextErr
+					break
+				}
+				failureCount = 0
+				s.applyServices(endpoint, status, services)
+			}
+		}
+
+		if watcher != nil {
+			_ = watcher.Stop()
+		}
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			s.removeWatcher(endpoint, status)
+			return
+		}
+
+		failureCount++
+		retryDelay := calculateRetryDelay(failureCount, constants.DiscoveryMaxRetryDelay)
+		if failureCount <= constants.DiscoveryLogThreshold || retryDelay != time.Second {
+			serviceWatchLog.Errorf("Failed to watch on endpoint: %s, err: %+v, failure count: %d, will recreate after %v",
+				endpoint, err, failureCount, retryDelay)
+		}
+		if !waitForRetry(ctx, retryDelay) {
+			s.removeWatcher(endpoint, status)
+			return
+		}
+	}
+}
+
+func (s *serviceWatcher) setWatcher(endpoint string, status *watcherStatus, watcher registry.Watcher) bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.watcherStatus[endpoint] != status {
+		return false
+	}
+	status.watcher = watcher
+	return true
+}
+
+func (s *serviceWatcher) removeWatcher(endpoint string, status *watcherStatus) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.watcherStatus[endpoint] == status {
+		delete(s.watcherStatus, endpoint)
+	}
+}
+
+func (s *serviceWatcher) applyServices(endpoint string, status *watcherStatus, services []*registry.ServiceInstance) {
+	if len(services) == 0 {
+		serviceWatchLog.Warnf("Empty services on endpoint: %s, this most likely no available instance in discovery", endpoint)
+		return
+	}
+	serviceWatchLog.Infof("Received %d services on endpoint: %s, hash: %s", len(services), endpoint, instancesSetHash(services))
+	if !s.setSelectedCache(endpoint, status, services) {
+		return
+	}
+	s.doCallback(endpoint, services)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func calculateRetryDelay(failureCount int, maxDelay time.Duration) time.Duration {
+	steps := constants.DiscoveryRetrySteps
+
+	index := failureCount - 1
+	if index >= len(steps) {
+		return maxDelay
+	}
+
+	delay := steps[index]
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
 }
 
 func (s *serviceWatcher) doCallback(endpoint string, services []*registry.ServiceInstance) {
@@ -212,12 +264,19 @@ func (s *serviceWatcher) doCallback(endpoint string, services []*registry.Servic
 
 func (s *serviceWatcher) proccleanup() {
 	doCleanup := func() {
-		for endpoint, appliers := range s.appliers {
+		s.lock.RLock()
+		endpoints := make([]string, 0, len(s.appliers))
+		for endpoint := range s.appliers {
+			endpoints = append(endpoints, endpoint)
+		}
+		s.lock.RUnlock()
+
+		for _, endpoint := range endpoints {
 			var cleanup []string
 			func() {
 				s.lock.RLock()
 				defer s.lock.RUnlock()
-				for id, applier := range appliers {
+				for id, applier := range s.appliers[endpoint] {
 					if applier.Canceled() {
 						cleanup = append(cleanup, id)
 						serviceWatchLog.Warnf("applier on endpoint: %s, id: %s is canceled, will be deleted later", endpoint, id)
@@ -226,25 +285,51 @@ func (s *serviceWatcher) proccleanup() {
 				}
 			}()
 			if len(cleanup) <= 0 {
-				return
+				continue
 			}
 			serviceWatchLog.Infof("Cleanup appliers on endpoint: %q with keys: %+v", endpoint, cleanup)
 			func() {
 				s.lock.Lock()
 				defer s.lock.Unlock()
+				appliers := s.appliers[endpoint]
 				for _, id := range cleanup {
 					delete(appliers, id)
 				}
 				serviceWatchLog.Infof("Succeeded to clean %d appliers on endpoint: %q, now %d appliers are available", len(cleanup), endpoint, len(appliers))
 			}()
+			s.stopWatcherIfUnused(endpoint)
 		}
 	}
 
-	const interval = time.Second * 30
+	interval := constants.DiscoveryCleanupInterval
 	for {
-		serviceWatchLog.Infof("Start to cleanup appliers on all endpoints for every %s", interval.String())
+		// serviceWatchLog.Infof("Start to cleanup appliers on all endpoints for every %s", interval.String())
 		time.Sleep(interval)
 		doCleanup()
+	}
+}
+
+func (s *serviceWatcher) stopWatcherIfUnused(endpoint string) {
+	s.lock.Lock()
+	if len(s.appliers[endpoint]) != 0 {
+		s.lock.Unlock()
+		return
+	}
+	delete(s.appliers, endpoint)
+	status := s.watcherStatus[endpoint]
+	delete(s.watcherStatus, endpoint)
+	var watcher registry.Watcher
+	if status != nil {
+		watcher = status.watcher
+	}
+	s.lock.Unlock()
+
+	if status == nil {
+		return
+	}
+	status.cancel()
+	if watcher != nil {
+		_ = watcher.Stop()
 	}
 }
 
